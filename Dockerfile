@@ -12,4 +12,5 @@ VOLUME ["/data"]
 
 ENV DATABASE_PATH=/data/fuel_prices.db
 
+# -u: unbuffered stdout/stderr so logs appear in real-time via docker logs
 CMD ["python", "-u", "main.py"]
