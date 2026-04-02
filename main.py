@@ -7,7 +7,7 @@ import schedule
 
 from src.config import FETCH_INTERVAL_MINUTES
 from src.database import init_db, save_snapshot
-from src.fetcher import fetch_prices
+from src.datasource import GeoJsonDataSource
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,11 +17,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+source = GeoJsonDataSource()
+
 
 def run_once() -> None:
     """Fetch current fuel prices and persist them to the database."""
     try:
-        records = fetch_prices()
+        records = source.fetch()
         count = save_snapshot(records)
         logger.info("Snapshot complete: %d records stored.", count)
     except Exception as exc:  # noqa: BLE001

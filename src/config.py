@@ -6,10 +6,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# URL for the Quebec fuel price data (Excel download)
+# URL for the Quebec fuel price data (GeoJSON)
+GEOJSON_URL = os.getenv(
+    "GEOJSON_URL",
+    "https://regieessencequebec.ca/stations.geojson.gz",
+)
+
+# Legacy URL (kept for reference / fallback)
 FUEL_PRICE_URL = os.getenv(
     "FUEL_PRICE_URL",
-    "https://regieessencequebec.ca/api/stations",
+    "https://regieessencequebec.ca/stations.geojson.gz",
 )
 
 # Database path for SQLite
