@@ -1,0 +1,15 @@
+services:
+  jerry-can:
+    image: ghcr.io/vbrunelle/jerry-can:latest
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_PATH=/data/fuel_prices.db
+    volumes:
+      - jerry-can-data:/data
+    restart: unless-stopped
+
+volumes:
+  jerry-can-data:
