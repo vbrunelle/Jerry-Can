@@ -76,11 +76,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-    print(f"{station_count} station(s) ont eu au moins une variation de prix :\n")
-    result.show(n=500, truncate=40)
-
-
-if __name__ == "__main__":
-    main()
