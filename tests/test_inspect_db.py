@@ -1,10 +1,13 @@
-"""Tests for the inspect_db module."""
+"""Tests for the inspect_db module and inspector classes."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
 from src.database import init_db, save_snapshot, connect
+from src.inspector import Inspector
+from src.inspector_sqlite import SqliteInspector
 from inspect_db import (
     show_schema,
     show_summary,
@@ -179,3 +182,312 @@ class TestShowLatestPrices:
         show_latest_prices(empty_db)
         out = capsys.readouterr().out
         assert "No price data yet." in out
+
+
+# ---------------------------------------------------------------------------
+# Abstract Inspector tests
+# ---------------------------------------------------------------------------
+
+
+class TestInspectorIsAbstract:
+    def test_cannot_instantiate(self) -> None:
+        with pytest.raises(TypeError):
+            Inspector()
+
+    def test_subclass_must_implement_all_methods(self) -> None:
+        class Incomplete(Inspector):
+            pass
+
+        with pytest.raises(TypeError):
+            Incomplete()
+
+
+# ---------------------------------------------------------------------------
+# SqliteInspector class-based tests
+# ---------------------------------------------------------------------------
+
+
+class TestSqliteInspector:
+    def test_show_all_runs_every_report(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        inspector = SqliteInspector(populated_db)
+        inspector.show_all()
+        out = capsys.readouterr().out
+        assert "Schema:" in out
+        assert "Stations: 5" in out
+        assert "Lowest prices" in out
+        assert "Montréal" in out
+
+    def test_show_schema(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        SqliteInspector(populated_db).show_schema()
+        out = capsys.readouterr().out
+        assert "stations" in out
+        assert "prices" in out
+
+    def test_show_summary(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        SqliteInspector(populated_db).show_summary()
+        out = capsys.readouterr().out
+        assert "Stations: 5" in out
+        assert "Price records: 6" in out
+
+    def test_show_snapshots(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        SqliteInspector(populated_db).show_snapshots()
+        out = capsys.readouterr().out
+        assert "2026-04-01T12:00:00" in out
+
+    def test_show_regions(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        SqliteInspector(populated_db).show_regions()
+        out = capsys.readouterr().out
+        assert "Montréal" in out
+
+    def test_show_latest_prices(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        SqliteInspector(populated_db).show_latest_prices()
+        out = capsys.readouterr().out
+        assert "165.0" in out
+
+    def test_empty_db(self, empty_db: str, capsys: pytest.CaptureFixture) -> None:
+        inspector = SqliteInspector(empty_db)
+        inspector.show_all()
+        out = capsys.readouterr().out
+        assert "0 rows" in out
+        assert "Stations: 0" in out
+        assert "No price data yet." in out
+
+    def test_raises_file_not_found_on_nonexistent_db(self, tmp_path: Path) -> None:
+        """inspect must NOT silently create a new file — it should raise."""
+        nonexistent = str(tmp_path / "does_not_exist.db")
+        inspector = SqliteInspector(nonexistent)
+        with pytest.raises(FileNotFoundError, match="Database not found"):
+            inspector.show_schema()
+
+    def test_does_not_create_file_when_db_missing(self, tmp_path: Path) -> None:
+        """Inspecting a missing DB must not create the file on disk."""
+        import os
+        nonexistent = str(tmp_path / "should_not_be_created.db")
+        inspector = SqliteInspector(nonexistent)
+        with pytest.raises(FileNotFoundError):
+            inspector.show_all()
+        assert not os.path.exists(nonexistent), "inspect_db must not create the DB file"
+
+
+# ---------------------------------------------------------------------------
+# HudiInspector tests (mocked Spark)
+# ---------------------------------------------------------------------------
+
+
+def _mock_spark_df(rows, schema_fields=None):
+    """Build a mock Spark DataFrame with .count(), .collect(), .select(), etc."""
+    df = MagicMock()
+    df.count.return_value = len(rows)
+    df.collect.return_value = rows
+
+    if schema_fields is None:
+        schema_fields = []
+    schema = MagicMock()
+    schema.fields = schema_fields
+    df.schema = schema
+
+    # select().distinct().count()
+    select_mock = MagicMock()
+    select_mock.distinct.return_value = select_mock
+    select_mock.count.return_value = len({r.get("station_id", "") for r in rows}) if rows else 0
+    # select().distinct().groupBy().agg().orderBy().collect()
+    select_mock.groupBy.return_value = select_mock
+    select_mock.agg.return_value = select_mock
+    select_mock.orderBy.return_value = select_mock
+    select_mock.collect.return_value = rows
+    df.select.return_value = select_mock
+
+    # agg().collect()
+    agg_mock = MagicMock()
+    df.agg.return_value = agg_mock
+
+    # filter().orderBy().limit().collect()
+    filter_mock = MagicMock()
+    filter_mock.orderBy.return_value = filter_mock
+    filter_mock.limit.return_value = filter_mock
+    filter_mock.collect.return_value = rows
+    df.filter.return_value = filter_mock
+
+    # groupBy().agg().orderBy().limit().collect()
+    group_mock = MagicMock()
+    group_mock.agg.return_value = group_mock
+    group_mock.orderBy.return_value = group_mock
+    group_mock.limit.return_value = group_mock
+    group_mock.collect.return_value = rows
+    df.groupBy.return_value = group_mock
+
+    return df
+
+
+class TestHudiInspector:
+    def test_show_schema_prints_fields(self, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        field1 = MagicMock()
+        field1.name = "station_id"
+        field1.dataType = "StringType"
+        field2 = MagicMock()
+        field2.name = "price"
+        field2.dataType = "DoubleType"
+
+        mock_df = _mock_spark_df([], schema_fields=[field1, field2])
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", return_value=mock_df):
+            inspector.show_schema()
+
+        out = capsys.readouterr().out
+        assert "Schema:" in out
+        assert "station_id" in out
+        assert "price" in out
+
+    def test_show_schema_no_table(self, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", side_effect=Exception("table not found")):
+            inspector.show_schema()
+
+        out = capsys.readouterr().out
+        assert "No Hudi table found." in out
+
+    @patch("src.inspector_hudi.F", new_callable=MagicMock)
+    def test_show_summary(self, mock_F: MagicMock, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        rows = [
+            {"station_id": "ST001", "fuel_type": "regular", "price": 175.0, "fetched_at": "2026-04-01T12:00:00"},
+            {"station_id": "ST002", "fuel_type": "diesel", "price": 165.0, "fetched_at": "2026-04-01T12:00:00"},
+        ]
+        mock_df = _mock_spark_df(rows)
+        agg_row = MagicMock()
+        agg_row.__getitem__ = lambda self, k: "2026-04-01T12:00:00"
+        mock_df.agg.return_value.collect.return_value = [agg_row]
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", return_value=mock_df):
+            inspector.show_summary()
+
+        out = capsys.readouterr().out
+        assert "Price records: 2" in out
+
+    @patch("src.inspector_hudi.F", new_callable=MagicMock)
+    def test_show_latest_prices(self, mock_F: MagicMock, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        rows = [
+            {"station_name": "Station A", "city": "Montréal", "fuel_type": "regular", "price": 175.0, "fetched_at": "2026-04-01T12:00:00"},
+        ]
+        mock_df = _mock_spark_df(rows)
+        mock_df.agg.return_value.collect.return_value = [MagicMock(__getitem__=lambda s, i: "2026-04-01T12:00:00")]
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", return_value=mock_df):
+            inspector.show_latest_prices()
+
+        out = capsys.readouterr().out
+        assert "Lowest prices" in out
+        assert "175.0" in out
+
+    def test_show_latest_prices_empty(self, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        mock_df = _mock_spark_df([])
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", return_value=mock_df):
+            inspector.show_latest_prices()
+
+        out = capsys.readouterr().out
+        assert "No price data yet." in out
+
+    @patch("src.inspector_hudi.F", new_callable=MagicMock)
+    def test_show_regions(self, mock_F: MagicMock, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        region_rows = [
+            {"region": "Montréal", "cnt": 10},
+            {"region": "Québec", "cnt": 5},
+        ]
+        mock_df = _mock_spark_df(region_rows)
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", return_value=mock_df):
+            inspector.show_regions()
+
+        out = capsys.readouterr().out
+        assert "Montréal" in out
+
+    def test_show_regions_no_table(self, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(inspector, "_read_table", side_effect=Exception("nope")):
+            inspector.show_regions()
+
+        out = capsys.readouterr().out
+        assert "No stations yet." in out
+
+    def test_show_snapshots(self, tmp_path: "Path", capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        hoodie_dir = tmp_path / ".hoodie"
+        hoodie_dir.mkdir()
+        commit_data = {
+            "operationType": "UPSERT",
+            "partitionToWriteStats": {
+                "Montréal": [{"numInserts": 100, "numUpdateWrites": 50}]
+            },
+            "extraMetadata": {},
+        }
+        (hoodie_dir / "20260401120000000.commit").write_text(
+            __import__("json").dumps(commit_data)
+        )
+
+        inspector = HudiInspector(table_path=str(tmp_path))
+        inspector.show_snapshots()
+
+        out = capsys.readouterr().out
+        assert "20260401120000000" in out
+        assert "100" in out
+        assert "50" in out
+
+    def test_show_snapshots_no_table(self, capsys: pytest.CaptureFixture) -> None:
+        from src.inspector_hudi import HudiInspector
+
+        inspector = HudiInspector(table_path="/tmp/nonexistent_hudi_table_xyz")
+        inspector.show_snapshots()
+
+        out = capsys.readouterr().out
+        assert "No commits yet." in out
+
+    def test_file_not_found_shows_helpful_message(self, capsys: pytest.CaptureFixture) -> None:
+        """FileNotFoundError from Spark must print a clear 'run main.py' message,
+        not a generic 'No Hudi table found' that looks like normal state."""
+        from src.inspector_hudi import HudiInspector
+
+        inspector = HudiInspector(table_path="/nonexistent/path")
+        with patch.object(
+            inspector,
+            "_read_table",
+            side_effect=Exception("FileNotFoundException: File /nonexistent/path does not exist"),
+        ):
+            inspector.show_schema()
+
+        out = capsys.readouterr().out
+        assert "main.py" in out or "does not exist" in out.lower() or "Run" in out
+
+    def test_spark_error_is_not_swallowed(self, capsys: pytest.CaptureFixture) -> None:
+        """A real Spark crash (not a missing file) must surface the error message."""
+        from src.inspector_hudi import HudiInspector
+
+        inspector = HudiInspector(table_path="/tmp/fake_hudi")
+        with patch.object(
+            inspector,
+            "_read_table",
+            side_effect=RuntimeError("OutOfMemoryError: Java heap space"),
+        ):
+            inspector.show_schema()
+
+        out = capsys.readouterr().out
+        assert "OutOfMemoryError" in out or "Java heap space" in out

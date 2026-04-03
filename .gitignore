@@ -208,3 +208,9 @@ __marimo__/
 
 # SQLite database
 fuel_prices.db
+
+# Apache Hudi / Spark local artifacts
+metastore_db/
+spark-warehouse/
+derby.log
+*.hoodie/
