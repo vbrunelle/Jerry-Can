@@ -29,7 +29,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from src.config import HUDI_TABLE_NAME, HUDI_TABLE_PATH
+from src.config import HUDI_PARALLELISM, HUDI_TABLE_NAME, HUDI_TABLE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ HUDI_OPTIONS: dict[str, str] = {
     "hoodie.datasource.write.operation": "upsert",
     "hoodie.datasource.write.table.type": "COPY_ON_WRITE",
     "hoodie.datasource.write.partitionpath.field": "region",
-    "hoodie.upsert.shuffle.parallelism": "2",
-    "hoodie.insert.shuffle.parallelism": "2",
+    "hoodie.upsert.shuffle.parallelism": HUDI_PARALLELISM,
+    "hoodie.insert.shuffle.parallelism": HUDI_PARALLELISM,
 }
 
 # Hudi Spark bundle Maven coordinates (auto-downloaded by Spark).

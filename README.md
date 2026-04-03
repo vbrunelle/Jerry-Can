@@ -21,7 +21,7 @@ Jerry-Can/
 │   ├── config.py        # Configuration (variables d'environnement)
 │   ├── datasource.py    # Récupération et analyse des données GeoJSON
 │   ├── fetcher.py       # Récupération et analyse des données (JSON ou Excel, legacy)
-│   ├── database.py      # Persistance SQLite (backend par défaut)
+│   ├── database.py      # Persistance SQLite (backend de repli)
 │   └── hudi_writer.py   # Persistance Apache Hudi (backend par défaut)
 ├── tests/
 │   ├── test_database.py     # Tests unitaires de la base de données SQLite

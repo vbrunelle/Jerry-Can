@@ -47,3 +47,6 @@ HUDI_TABLE_PATH = os.getenv("HUDI_TABLE_PATH", "/data/hudi/fuel_prices")
 
 # Logical Hudi table name.
 HUDI_TABLE_NAME = os.getenv("HUDI_TABLE_NAME", "fuel_prices")
+
+# Spark shuffle parallelism used by Hudi upserts/inserts.
+HUDI_PARALLELISM = os.getenv("HUDI_PARALLELISM", "2")
