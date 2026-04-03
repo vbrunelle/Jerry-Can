@@ -18,4 +18,3 @@ ENV
 htmlcov
 .coverage
 fuel_prices.db
-requirements-dev.txt

@@ -7,7 +7,7 @@ A Windows batch script that automates the setup of Python development environmen
 This script automates the entire setup process for Python projects running in WSL from Windows:
 
 1. **Creates a Python virtual environment** in WSL at `~/.venvs/<project_name>`
-2. **Installs dependencies** from `requirements-test.txt` and/or `setup.py` if present
+2. **Installs dependencies** from `requirements.txt` and/or `setup.py` if present
 3. **Configures VS Code settings** with:
    - Custom WSL terminal profiles with auto-activation
    - Python interpreter path pointing to the WSL virtual environment

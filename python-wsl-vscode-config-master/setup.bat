@@ -34,7 +34,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 
 echo Step 2: Upgrading pip and installing dependencies...
-wsl bash -c "source ~/.venvs/%PROJECT_NAME%/bin/activate && pip install --upgrade pip && cd '%WSL_PATH%' && if [ -f 'requirements-test.txt' ]; then pip install -r requirements-test.txt; echo 'Installed test dependencies'; fi && if [ -f 'setup.py' ]; then pip install -e .; echo 'Installed package in development mode'; fi"
+wsl bash -c "source ~/.venvs/%PROJECT_NAME%/bin/activate && pip install --upgrade pip && cd '%WSL_PATH%' && if [ -f 'requirements.txt' ]; then pip install -r requirements.txt; echo 'Installed dependencies'; fi && if [ -f 'setup.py' ]; then pip install -e .; echo 'Installed package in development mode'; fi"
 if %ERRORLEVEL% NEQ 0 (
     echo WARNING: Some dependencies may not have installed correctly
 )
