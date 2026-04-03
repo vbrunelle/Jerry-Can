@@ -1,0 +1,15 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Jerry-Can — Tableau de bord{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>Bienvenue, {{ request.user.username }}!</h1>
+    <p>Tableau de bord Jerry-Can — Suivi des prix du carburant au Québec.</p>
+    <p>
+        <a href="{% url 'inspection' %}" class="btn">Inspecter les données</a>
+        <form method="post" action="{% url 'request_download' %}" style="display:inline;">
+            {% csrf_token %}
+            <button type="submit" class="btn">Télécharger CSV</button>
+        </form>
+    </p>
+</div>
+{% endblock %}

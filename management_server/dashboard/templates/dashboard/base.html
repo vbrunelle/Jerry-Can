@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Jerry-Can{% endblock %}</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; background: #f5f5f5; }
+        nav { margin-bottom: 2rem; }
+        nav a { margin-right: 1rem; text-decoration: none; color: #0066cc; }
+        nav a:hover { text-decoration: underline; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+        th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+        th { background: #eee; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .btn { display: inline-block; padding: 0.5rem 1rem; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; }
+        .btn:hover { background: #0052a3; }
+        .text-muted { color: #666; }
+        .positive { color: #c00; }
+        .negative { color: #090; }
+        .messages li { padding: 0.5rem; margin-bottom: 0.5rem; border-radius: 4px; list-style: none; }
+        .messages .warning { background: #fff3cd; }
+        .messages .error { background: #f8d7da; }
+        .messages .success { background: #d4edda; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+<div class="container">
+    <nav>
+        <a href="{% url 'home' %}">Accueil</a>
+        <a href="{% url 'inspection' %}">Inspection</a>
+        <a href="{% url 'admin:index' %}">Admin</a>
+        <span style="float:right" class="text-muted">{{ request.user.username }}</span>
+    </nav>
+    {% if messages %}
+    <ul class="messages">
+        {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+</div>
+</body>
+</html>

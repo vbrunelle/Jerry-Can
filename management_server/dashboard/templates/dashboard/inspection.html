@@ -1,0 +1,120 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Inspection des données{% endblock %}
+{% block content %}
+<h1>Inspection des données</h1>
+
+{% if last_updated %}
+<p class="text-muted">Dernière mise à jour : {{ last_updated }}</p>
+{% endif %}
+
+{% if not data %}
+<div class="card"><p>Aucune donnée en cache. Le rafraîchissement automatique se fait toutes les 15 minutes.</p></div>
+{% else %}
+
+<div class="card">
+    <h2>Résumé</h2>
+    <table>
+        <tr><th>Stations</th><td>{{ data.summary.station_count }}</td></tr>
+        <tr><th>Enregistrements de prix</th><td>{{ data.summary.price_count }}</td></tr>
+        <tr><th>Snapshots</th><td>{{ data.summary.snapshot_count }}</td></tr>
+        <tr><th>Premier snapshot</th><td>{{ data.summary.first_snapshot|default:"—" }}</td></tr>
+        <tr><th>Dernier snapshot</th><td>{{ data.summary.last_snapshot|default:"—" }}</td></tr>
+    </table>
+</div>
+
+{% if data.regions %}
+<div class="card">
+    <h2>Régions</h2>
+    <table>
+        <tr>
+            <th>Région</th>
+            <th>Stations</th>
+            <th>Prix moyens par type</th>
+        </tr>
+        {% for r in data.regions %}
+        <tr>
+            <td>{{ r.region }}</td>
+            <td>{{ r.station_count }}</td>
+            <td>
+                {% for fuel, price in r.avg_prices.items %}
+                    {{ fuel }}: {{ price }}¢&nbsp;
+                {% empty %}
+                    —
+                {% endfor %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+{% if data.snapshots %}
+<div class="card">
+    <h2>Derniers snapshots</h2>
+    <table>
+        <tr><th>Date</th><th>Enregistrements</th></tr>
+        {% for s in data.snapshots %}
+        <tr><td>{{ s.fetched_at }}</td><td>{{ s.record_count }}</td></tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+{% if data.latest_prices %}
+<div class="card">
+    <h2>Prix les plus bas (dernier snapshot)</h2>
+    <table>
+        <tr><th>Station</th><th>Ville</th><th>Région</th><th>Type</th><th>Prix</th></tr>
+        {% for p in data.latest_prices %}
+        <tr>
+            <td>{{ p.station_name }}</td>
+            <td>{{ p.city|default:"—" }}</td>
+            <td>{{ p.region|default:"—" }}</td>
+            <td>{{ p.fuel_type }}</td>
+            <td>{{ p.price }}¢</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+{% if data.price_variations.increases or data.price_variations.decreases %}
+<div class="card">
+    <h2>Variations de prix</h2>
+    {% if data.price_variations.increases %}
+    <h3>Hausses (top 10)</h3>
+    <table>
+        <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th></tr>
+        {% for v in data.price_variations.increases %}
+        <tr>
+            <td>{{ v.station_name }}</td>
+            <td>{{ v.city|default:"—" }}</td>
+            <td>{{ v.fuel_type }}</td>
+            <td>{{ v.prev_price }}¢</td>
+            <td>{{ v.price }}¢</td>
+            <td class="positive">+{{ v.delta }}¢</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    {% if data.price_variations.decreases %}
+    <h3>Baisses (top 10)</h3>
+    <table>
+        <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th></tr>
+        {% for v in data.price_variations.decreases %}
+        <tr>
+            <td>{{ v.station_name }}</td>
+            <td>{{ v.city|default:"—" }}</td>
+            <td>{{ v.fuel_type }}</td>
+            <td>{{ v.prev_price }}¢</td>
+            <td>{{ v.price }}¢</td>
+            <td class="negative">{{ v.delta }}¢</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}
