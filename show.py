@@ -2,17 +2,17 @@
 
 Usage
 -----
-# Auto-detect backend from PERSISTENCE_BACKEND env var (default: sqlite)
-python inspect.py
+# Auto-detect backend from PERSISTENCE_BACKEND env var (default: hudi)
+python show.py
 
 # Force SQLite, optionally on a specific file
-PERSISTENCE_BACKEND=sqlite python inspect.py
-PERSISTENCE_BACKEND=sqlite python inspect.py /path/to/fuel_prices.db
+PERSISTENCE_BACKEND=sqlite python show.py
+PERSISTENCE_BACKEND=sqlite python show.py /path/to/fuel_prices.db
 
 # Force Hudi (requires Java + Spark)
-PERSISTENCE_BACKEND=hudi python inspect.py
+PERSISTENCE_BACKEND=hudi python show.py
 PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 python show.py
-PERSISTENCE_BACKEND=hudi python inspect.py /data/hudi/fuel_prices
+PERSISTENCE_BACKEND=hudi python show.py /data/hudi/fuel_prices
 """
 
 import sys
