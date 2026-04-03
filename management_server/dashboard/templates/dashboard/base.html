@@ -2,46 +2,72 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>{% block title %}Jerry-Can{% endblock %}</title>
-    <style>
-        body { font-family: sans-serif; margin: 2rem; background: #f5f5f5; }
-        nav { margin-bottom: 2rem; }
-        nav a { margin-right: 1rem; text-decoration: none; color: #0066cc; }
-        nav a:hover { text-decoration: underline; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-        th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
-        th { background: #eee; }
-        .card { background: white; padding: 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .btn { display: inline-block; padding: 0.5rem 1rem; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; border: none; cursor: pointer; }
-        .btn:hover { background: #0052a3; }
-        .text-muted { color: #666; }
-        .positive { color: #c00; }
-        .negative { color: #090; }
-        .messages li { padding: 0.5rem; margin-bottom: 0.5rem; border-radius: 4px; list-style: none; }
-        .messages .warning { background: #fff3cd; }
-        .messages .error { background: #f8d7da; }
-        .messages .success { background: #d4edda; }
-    </style>
+    <!-- Tabler.io CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.2.0/dist/css/tabler.min.css">
     {% block extra_head %}{% endblock %}
 </head>
-<body>
-<div class="container">
-    <nav>
-        <a href="{% url 'home' %}">Accueil</a>
-        <a href="{% url 'inspection' %}">Inspection</a>
-        <a href="{% url 'admin:index' %}">Admin</a>
-        <span style="float:right" class="text-muted">{{ request.user.username }}</span>
-    </nav>
-    {% if messages %}
-    <ul class="messages">
-        {% for message in messages %}
-        <li class="{{ message.tags }}">{{ message }}</li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-    {% block content %}{% endblock %}
-</div>
+<body class="{% block body_class %}{% endblock %}">
+    {% block body %}
+    <div class="page">
+        <header class="navbar navbar-expand-md d-print-none">
+            <div class="container-xl">
+                <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-btn pe-0 pe-md-3">
+                    <a href="{% url 'home' %}" class="text-decoration-none">⛽ Jerry-Can</a>
+                </h1>
+                <div class="collapse navbar-collapse" id="navbar-menu">
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'home' %}">Accueil</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'inspection' %}">Inspection</a>
+                        </li>
+                        {% if request.user.role == 'admin' %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'manage_users' %}">Gestion des usagers</a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </div>
+                <div class="nav-item dropdown">
+                    <a href="#" class="nav-link d-flex lh-1 text-reset p-0" data-bs-toggle="dropdown">
+                        <span class="avatar avatar-sm bg-primary-lt">{{ request.user.username|first|upper }}</span>
+                        <div class="d-none d-xl-block ps-2">
+                            <div>{{ request.user.username }}</div>
+                            <div class="mt-1 small text-secondary">{{ request.user.role }}</div>
+                        </div>
+                    </a>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="{% url 'change_password' %}">Changer le mot de passe</a>
+                        <a class="dropdown-item" href="{% url 'logout' %}">Déconnexion</a>
+                    </div>
+                </div>
+            </div>
+        </header>
+        <div class="page-wrapper">
+            <div class="page-body">
+                <div class="container-xl">
+                    {% if messages %}
+                    {% for message in messages %}
+                    <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible" role="alert">
+                        <div class="d-flex">
+                            <div>{{ message }}</div>
+                        </div>
+                        <a class="btn-close" data-bs-dismiss="alert" aria-label="close"></a>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                    {% block content %}{% endblock %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endblock %}
+    <!-- Tabler.io JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.2.0/dist/js/tabler.min.js"></script>
+    {% block extra_js %}{% endblock %}
 </body>
 </html>

@@ -23,7 +23,7 @@ def login_view(request):
                 login(request, user)
                 if user.must_change_password:
                     return redirect('change_password')
-                return redirect('dashboard')
+                return redirect('home')
             form.add_error(None, 'Invalid username or password.')
     return render(request, 'accounts/login.html', {'form': form})
 
@@ -49,14 +49,14 @@ def force_change_password(request):
                 request.user.must_change_password = False
                 request.user.save()
                 login(request, request.user)
-                return redirect('dashboard')
+                return redirect('home')
     return render(request, 'accounts/change_password.html', {'form': form})
 
 
 @login_required
 def manage_users(request):
     if request.user.role != 'admin':
-        return redirect('dashboard')
+        return redirect('home')
 
     generated_password = None
     created_user = None
@@ -92,7 +92,7 @@ def toggle_role(request, user_id):
         return HttpResponseNotAllowed(['POST'])
 
     if request.user.role != 'admin':
-        return redirect('dashboard')
+        return redirect('home')
 
     user = get_object_or_404(User, id=user_id)
     user.role = 'client' if user.role == 'admin' else 'admin'

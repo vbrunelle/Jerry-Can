@@ -1,30 +1,78 @@
 {% extends "dashboard/base.html" %}
 {% block title %}Téléchargement en cours{% endblock %}
-{% block extra_head %}
+{% block content %}
+<div class="page-header d-print-none">
+    <div class="row align-items-center">
+        <div class="col-auto">
+            <h2 class="page-title">Téléchargement</h2>
+        </div>
+    </div>
+</div>
+<div class="card mt-3">
+    <div class="card-body">
+        <div id="status-container">
+            <div id="pending-state" {% if download_request.status == 'ready' or download_request.status == 'error' %}style="display:none"{% endif %}>
+                <div class="d-flex align-items-center mb-3">
+                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
+                    <strong id="status-text">{{ download_request.get_status_display }}</strong>
+                </div>
+                <p class="text-secondary">Les données sont en cours de préparation. Veuillez garder cette page ouverte, le téléchargement commencera automatiquement.</p>
+            </div>
+            <div id="ready-state" {% if download_request.status != 'ready' %}style="display:none"{% endif %}>
+                <div class="alert alert-success">
+                    <strong>Les données sont prêtes!</strong> Le téléchargement devrait commencer automatiquement.
+                </div>
+                <a id="download-link" href="{% url 'download_file' request_id=download_request.pk %}" class="btn btn-primary">
+                    Télécharger à nouveau le fichier CSV
+                </a>
+            </div>
+            <div id="error-state" {% if download_request.status != 'error' %}style="display:none"{% endif %}>
+                <div class="alert alert-danger">
+                    <strong>Erreur:</strong> <span id="error-text">{{ download_request.error_message }}</span>
+                </div>
+            </div>
+        </div>
+        <p class="text-secondary mt-3">Demandé le {{ download_request.created_at }}</p>
+        <a href="{% url 'home' %}" class="btn btn-outline-secondary mt-2">Retour à l'accueil</a>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const statusEl = document.getElementById('status-text');
-    const downloadLink = document.getElementById('download-link');
     const requestId = {{ download_request.pk }};
+    const pendingState = document.getElementById('pending-state');
+    const readyState = document.getElementById('ready-state');
+    const errorState = document.getElementById('error-state');
+    const statusText = document.getElementById('status-text');
+    const errorText = document.getElementById('error-text');
+    let autoDownloaded = false;
 
     function poll() {
-        fetch(`/download/${requestId}/status/`, {
+        fetch('/download/' + requestId + '/status/', {
             headers: {'Accept': 'application/json'}
         })
-        .then(r => r.json())
-        .then(data => {
-            statusEl.textContent = data.status;
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
             if (data.status === 'ready') {
-                downloadLink.style.display = 'inline-block';
+                pendingState.style.display = 'none';
+                readyState.style.display = 'block';
+                if (!autoDownloaded) {
+                    autoDownloaded = true;
+                    window.location.href = '/download/' + requestId + '/file/';
+                }
                 return;
             }
             if (data.status === 'error') {
-                statusEl.textContent = 'Erreur: ' + data.error_message;
+                pendingState.style.display = 'none';
+                errorState.style.display = 'block';
+                errorText.textContent = data.error_message;
                 return;
             }
+            statusText.textContent = data.status === 'processing' ? 'En cours de préparation...' : data.status;
             setTimeout(poll, 2000);
         })
-        .catch(() => setTimeout(poll, 5000));
+        .catch(function() { setTimeout(poll, 5000); });
     }
 
     if ('{{ download_request.status }}' === 'pending' || '{{ download_request.status }}' === 'processing') {
@@ -32,16 +80,4 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 </script>
-{% endblock %}
-{% block content %}
-<div class="card">
-    <h1>Téléchargement</h1>
-    <p>Statut : <strong id="status-text">{{ download_request.get_status_display }}</strong></p>
-    <p>Demandé le {{ download_request.created_at }}</p>
-    <a id="download-link" href="{% url 'download_file' request_id=download_request.pk %}"
-       class="btn" {% if download_request.status != 'ready' %}style="display:none"{% endif %}>
-        Télécharger le fichier CSV
-    </a>
-    <p><a href="{% url 'home' %}">Retour à l'accueil</a></p>
-</div>
 {% endblock %}
