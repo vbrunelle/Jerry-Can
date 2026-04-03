@@ -168,6 +168,12 @@ class TestInitHudi:
 class TestSaveSnapshot:
     """Verify the ``save_snapshot`` write path."""
 
+    @pytest.fixture(autouse=True)
+    def _no_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Neutralise delete-missing-stations logic for pure upsert tests."""
+        import src.hudi_writer as hw
+        monkeypatch.setattr(hw, "_delete_missing_stations", lambda *_a, **_kw: 0)
+
     def test_returns_zero_for_empty_list(self) -> None:
         import src.hudi_writer as hw
 
@@ -314,6 +320,84 @@ class TestSaveSnapshot:
         records = _sample_records(1)
         with pytest.raises(RuntimeError, match="Hudi write failed"):
             hw.save_snapshot(records, table_path="/tmp/test_hudi")
+
+
+class TestDeleteMissingStations:
+    """Verify that ``_delete_missing_stations`` detects and deletes vanished stations."""
+
+    def test_no_delete_when_all_stations_present(self) -> None:
+        """No delete issued when the current batch matches the table."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+
+        # Simulate existing table with ST0001
+        from unittest.mock import MagicMock
+        existing = MagicMock()
+        existing.select.return_value = existing
+        existing.join.return_value.count.return_value = 0
+        mock_spark.read.format.return_value.load.return_value = existing
+
+        current_df = MagicMock()
+        result = hw._delete_missing_stations(mock_spark, current_df, "/tmp/test")
+        assert result == 0
+
+    def test_delete_issued_for_missing_stations(self) -> None:
+        """When stations disappear, a Hudi delete must be written."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+
+        from unittest.mock import MagicMock
+        existing = MagicMock()
+        existing.select.return_value = existing
+        to_delete_df = MagicMock()
+        to_delete_df.count.return_value = 3
+        existing.join.return_value = to_delete_df
+        mock_spark.read.format.return_value.load.return_value = existing
+
+        current_df = MagicMock()
+        result = hw._delete_missing_stations(mock_spark, current_df, "/tmp/test")
+        assert result == 3
+        # Verify a Hudi delete write was performed
+        to_delete_df.write.format.assert_called_once_with("hudi")
+
+    def test_delete_uses_correct_operation(self) -> None:
+        """The delete write must use hoodie.datasource.write.operation=delete."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+
+        from unittest.mock import MagicMock
+        existing = MagicMock()
+        existing.select.return_value = existing
+        to_delete_df = MagicMock()
+        to_delete_df.count.return_value = 1
+        existing.join.return_value = to_delete_df
+        mock_spark.read.format.return_value.load.return_value = existing
+
+        current_df = MagicMock()
+        hw._delete_missing_stations(mock_spark, current_df, "/tmp/test")
+
+        opts_call = to_delete_df.write.format.return_value.options
+        opts_passed = opts_call.call_args[1]  # keyword args
+        assert opts_passed["hoodie.datasource.write.operation"] == "delete"
+
+    def test_returns_zero_when_table_doesnt_exist(self) -> None:
+        """First run: spark.read raises — must return 0 gracefully."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+        mock_spark.read.format.return_value.load.side_effect = Exception("Path not found")
+
+        from unittest.mock import MagicMock
+        current_df = MagicMock()
+        result = hw._delete_missing_stations(mock_spark, current_df, "/tmp/test")
+        assert result == 0
 
 
 class TestGetSnapshotAt:

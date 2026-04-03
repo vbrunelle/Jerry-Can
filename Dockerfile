@@ -13,6 +13,11 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
+COPY tests/ tests/
+COPY pytest.ini .
+COPY inspect_db.py .
+COPY show.py .
+COPY dump_csv.py .
 COPY main.py .
 
 VOLUME ["/data"]

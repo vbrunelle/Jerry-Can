@@ -39,6 +39,10 @@ def show_snapshots(db_path: str = DATABASE_PATH) -> None:
     SqliteInspector(db_path).show_snapshots()
 
 
+def show_price_variations(db_path: str = DATABASE_PATH, limit: int = 10) -> None:
+    SqliteInspector(db_path).show_price_variations(limit)
+
+
 # ------------------------------------------------------------------
 # CLI entry point — picks the right inspector from config
 # ------------------------------------------------------------------

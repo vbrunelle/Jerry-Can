@@ -6,11 +6,10 @@ services:
       - path: .env
         required: false
     volumes:
-      - jerry-can-data:/data
+      - type: bind
+        source: ${DATA_DIR:-./data}
+        target: /data
     restart: unless-stopped
     # Hudi is the default backend. Uncomment below to fall back to SQLite:
     # environment:
     #   PERSISTENCE_BACKEND: sqlite
-
-volumes:
-  jerry-can-data:

@@ -14,6 +14,7 @@ from inspect_db import (
     show_latest_prices,
     show_regions,
     show_snapshots,
+    show_price_variations,
 )
 
 
@@ -59,6 +60,37 @@ def empty_db(tmp_path: Path) -> str:
     """Return a path to an empty initialised database."""
     db_path = str(tmp_path / "empty.db")
     init_db(db_path)
+    return db_path
+
+
+@pytest.fixture
+def two_snapshot_db(tmp_path: Path) -> str:
+    """Return a database with two snapshots so price variations exist."""
+    db_path = str(tmp_path / "two_snapshots.db")
+    init_db(db_path)
+    base = [
+        {
+            "station_id": f"ST{i:03d}",
+            "station_name": f"Station {i}",
+            "address": f"{i} Rue Principale",
+            "city": "Montréal" if i % 2 else "Québec",
+            "region": "Montréal" if i % 2 else "Capitale-Nationale",
+            "latitude": 45.5 + i * 0.01,
+            "longitude": -73.5 - i * 0.01,
+            "fuel_type": "regular",
+            "price": 170.0 + i,
+            "fetched_at": "2026-04-01T12:00:00",
+        }
+        for i in range(1, 4)
+    ]
+    save_snapshot(base, db_path)
+    # Second snapshot — ST001 goes up 5¢, ST002 drops 3¢, ST003 unchanged
+    snapshot2 = [
+        {**base[0], "price": 176.0, "fetched_at": "2026-04-02T12:00:00"},
+        {**base[1], "price": 169.0, "fetched_at": "2026-04-02T12:00:00"},
+        {**base[2], "price": 173.0, "fetched_at": "2026-04-02T12:00:00"},
+    ]
+    save_snapshot(snapshot2, db_path)
     return db_path
 
 
@@ -159,6 +191,82 @@ class TestShowRegions:
         show_regions(empty_db)
         out = capsys.readouterr().out
         assert "No stations yet." in out
+
+
+class TestShowPriceVariations:
+    def test_shows_rises_and_drops(self, two_snapshot_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(two_snapshot_db)
+        out = capsys.readouterr().out
+        assert "Hausses" in out
+        assert "Baisses" in out
+
+    def test_rise_appears_in_hausses(self, two_snapshot_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(two_snapshot_db)
+        out = capsys.readouterr().out
+        # ST001: 171 -> 176, delta = +5.0
+        hausses_section = out.split("Baisses")[0]
+        assert "+5.0" in hausses_section
+
+    def test_drop_appears_in_baisses(self, two_snapshot_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(two_snapshot_db)
+        out = capsys.readouterr().out
+        # ST002: 172 -> 169, delta = -3.0
+        baisses_section = out.split("Baisses")[1]
+        assert "-3.0" in baisses_section
+
+    def test_respects_limit(self, two_snapshot_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(two_snapshot_db, limit=1)
+        out = capsys.readouterr().out
+        data_lines = [l for l in out.strip().split("\n") if "¢" in l]
+        # 1 hausse + 1 baisse = 2 data lines total
+        assert len(data_lines) == 2
+
+    def test_single_snapshot_shows_no_variations(self, populated_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(populated_db)
+        out = capsys.readouterr().out
+        assert "No price variations yet" in out
+
+    def test_empty_db(self, empty_db: str, capsys: pytest.CaptureFixture) -> None:
+        show_price_variations(empty_db)
+        out = capsys.readouterr().out
+        assert "No price variations yet" in out
+
+    def test_summary_shows_changed_count(
+        self, two_snapshot_db: str, capsys: pytest.CaptureFixture
+    ) -> None:
+        show_price_variations(two_snapshot_db)
+        out = capsys.readouterr().out
+        # ST001 (+5¢) and ST002 (-3¢) changed; ST003 stayed the same
+        assert "2 station" in out
+
+    def test_no_change_message_when_all_prices_stable(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Two snapshots with identical prices should report no changes detected."""
+        db_path = str(tmp_path / "stable.db")
+        init_db(db_path)
+        records = [
+            {
+                "station_id": f"ST{i:03d}",
+                "station_name": f"Station {i}",
+                "address": f"{i} Rue Principale",
+                "city": "Montréal",
+                "region": "Montréal",
+                "latitude": 45.5 + i * 0.01,
+                "longitude": -73.5 - i * 0.01,
+                "fuel_type": "regular",
+                "price": 170.0 + i,
+                "fetched_at": "2026-04-01T12:00:00",
+            }
+            for i in range(1, 4)
+        ]
+        save_snapshot(records, db_path)
+        snapshot2 = [{**r, "fetched_at": "2026-04-02T12:00:00"} for r in records]
+        save_snapshot(snapshot2, db_path)
+
+        show_price_variations(db_path)
+        out = capsys.readouterr().out
+        assert "No price changes detected" in out
 
 
 class TestShowLatestPrices:
@@ -406,8 +514,8 @@ class TestHudiInspector:
         from src.inspector_hudi import HudiInspector
 
         region_rows = [
-            {"region": "Montréal", "cnt": 10},
-            {"region": "Québec", "cnt": 5},
+            {"region": "Montréal", "cnt": 10, "fuel_type": "regular", "avg_price": 174.5},
+            {"region": "Québec",   "cnt": 5,  "fuel_type": "regular", "avg_price": 175.2},
         ]
         mock_df = _mock_spark_df(region_rows)
 
