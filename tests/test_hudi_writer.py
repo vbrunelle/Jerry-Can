@@ -252,6 +252,53 @@ class TestSaveSnapshot:
         assert data_arg[0]["latitude"] == 0.0
         assert data_arg[0]["longitude"] == 0.0
 
+    def test_normalises_none_string_fields_to_empty(self) -> None:
+        """None values for string fields must become '' not 'None'."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+        records = _sample_records(1)
+        records[0]["station_name"] = None
+        records[0]["address"] = None
+        records[0]["city"] = None
+
+        hw.save_snapshot(records, table_path="/tmp/test_hudi")
+
+        data_arg = mock_spark.createDataFrame.call_args[0][0]
+        assert data_arg[0]["station_name"] == ""
+        assert data_arg[0]["address"] == ""
+        assert data_arg[0]["city"] == ""
+
+    def test_normalises_none_fuel_type_to_default(self) -> None:
+        """None fuel_type must fall back to 'regular', not 'None'."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+        records = _sample_records(1)
+        records[0]["fuel_type"] = None
+
+        hw.save_snapshot(records, table_path="/tmp/test_hudi")
+
+        data_arg = mock_spark.createDataFrame.call_args[0][0]
+        assert data_arg[0]["fuel_type"] == "regular"
+
+    def test_normalises_none_fetched_at_to_now(self) -> None:
+        """None fetched_at must fall back to current timestamp, not 'None'."""
+        import src.hudi_writer as hw
+
+        mock_spark = _mock_spark_session()
+        hw._spark = mock_spark
+        records = _sample_records(1)
+        records[0]["fetched_at"] = None
+
+        hw.save_snapshot(records, table_path="/tmp/test_hudi")
+
+        data_arg = mock_spark.createDataFrame.call_args[0][0]
+        assert data_arg[0]["fetched_at"] != "None"
+        assert "T" in data_arg[0]["fetched_at"]  # ISO-8601 format
+
     def test_raises_when_spark_write_fails(self) -> None:
         """When Hudi write fails, the error must propagate to the caller."""
         import src.hudi_writer as hw

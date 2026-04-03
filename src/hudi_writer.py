@@ -141,15 +141,15 @@ def save_snapshot(
         normalised.append(
             {
                 "station_id": str(rec["station_id"]),
-                "station_name": str(rec.get("station_name", "")),
-                "address": str(rec.get("address", "")),
-                "city": str(rec.get("city", "")),
-                "region": str(rec.get("region", "") or ""),
+                "station_name": str(rec.get("station_name") or ""),
+                "address": str(rec.get("address") or ""),
+                "city": str(rec.get("city") or ""),
+                "region": str(rec.get("region") or ""),
                 "latitude": float(rec.get("latitude") or 0.0),
                 "longitude": float(rec.get("longitude") or 0.0),
-                "fuel_type": str(rec.get("fuel_type", "regular")),
+                "fuel_type": str(rec.get("fuel_type") or "regular"),
                 "price": float(rec["price"]),
-                "fetched_at": str(rec.get("fetched_at", fetched_at)),
+                "fetched_at": str(rec.get("fetched_at") or fetched_at),
             }
         )
 
