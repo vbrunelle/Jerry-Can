@@ -56,6 +56,8 @@ Copiez `.env.example` vers `.env` et ajustez les variables :
 
 ## Utilisation
 
+### Collecte des données
+
 ```bash
 python main.py
 ```
@@ -65,6 +67,24 @@ Le programme :
 2. Effectue une première collecte immédiatement au démarrage
 3. Répète la collecte toutes les `FETCH_INTERVAL_MINUTES` minutes
 4. S'arrête proprement avec `Ctrl+C`
+
+### Inspecter les données collectées
+
+```bash
+# Backend SQLite (défaut)
+python show.py
+
+# SQLite — fichier spécifique
+python show.py /chemin/vers/fuel_prices.db
+
+# Backend Hudi (nécessite Java)
+PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 python show.py
+
+# Hudi — chemin de table spécifique
+PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 python show.py /data/hudi/fuel_prices
+```
+
+Affiche le schéma, le résumé, les snapshots, les régions et les derniers prix.
 
 ## Backends de persistance
 
