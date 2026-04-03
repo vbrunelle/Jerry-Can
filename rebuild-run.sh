@@ -23,5 +23,4 @@ echo "==> Starting container (detached)..."
 docker compose up -d
 
 echo "==> Container started. Following logs (Ctrl+C to stop watching, container keeps running)..."
-trap '' INT
 docker compose logs -f jerry-can
