@@ -5,8 +5,18 @@ import time
 
 import schedule
 
-from src.config import FETCH_INTERVAL_MINUTES
-from src.database import init_db, save_snapshot
+from src.config import FETCH_INTERVAL_MINUTES, PERSISTENCE_BACKEND
+
+if PERSISTENCE_BACKEND == "hudi":
+    from src.hudi_writer import init_hudi as init_db
+    from src.hudi_writer import save_snapshot
+    from src.hudi_writer import stop as _stop_backend
+else:
+    from src.database import init_db, save_snapshot
+
+    def _stop_backend() -> None:  # noqa: E303
+        """No-op for the SQLite backend."""
+
 from src.datasource import GeoJsonDataSource
 
 logging.basicConfig(
@@ -32,7 +42,10 @@ def run_once() -> None:
 
 def main() -> None:
     """Initialise the database and start the periodic scheduler."""
-    logger.info("Jerry-Can starting up.")
+    logger.info(
+        "Jerry-Can starting up (persistence backend: %s).",
+        PERSISTENCE_BACKEND,
+    )
     init_db()
 
     # Run immediately on startup, then every FETCH_INTERVAL_MINUTES minutes
@@ -48,6 +61,7 @@ def main() -> None:
             schedule.run_pending()
             time.sleep(1)
     except KeyboardInterrupt:
+        _stop_backend()
         logger.info("Jerry-Can stopped.")
 
 

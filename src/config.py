@@ -32,3 +32,18 @@ REQUEST_HEADERS = {
     "User-Agent": "Jerry-Can/1.0 (https://github.com/vbrunelle/Jerry-Can)",
     "Accept": "application/json, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, */*",
 }
+
+# ---------------------------------------------------------------------------
+# Persistence backend selection ("sqlite" or "hudi")
+# ---------------------------------------------------------------------------
+PERSISTENCE_BACKEND = os.getenv("PERSISTENCE_BACKEND", "hudi")
+
+# ---------------------------------------------------------------------------
+# Apache Hudi settings (used only when PERSISTENCE_BACKEND == "hudi")
+# ---------------------------------------------------------------------------
+
+# Filesystem path where the Hudi table is stored (local or HDFS/S3).
+HUDI_TABLE_PATH = os.getenv("HUDI_TABLE_PATH", "/data/hudi/fuel_prices")
+
+# Logical Hudi table name.
+HUDI_TABLE_NAME = os.getenv("HUDI_TABLE_NAME", "fuel_prices")

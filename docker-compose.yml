@@ -8,6 +8,9 @@ services:
     volumes:
       - jerry-can-data:/data
     restart: unless-stopped
+    # Hudi is the default backend. Uncomment below to fall back to SQLite:
+    # environment:
+    #   PERSISTENCE_BACKEND: sqlite
 
 volumes:
   jerry-can-data:
