@@ -428,31 +428,38 @@ class TestHudiInspector:
         out = capsys.readouterr().out
         assert "No stations yet." in out
 
-    @patch("src.inspector_hudi.F", new_callable=MagicMock)
-    def test_show_snapshots(self, mock_F: MagicMock, capsys: pytest.CaptureFixture) -> None:
+    def test_show_snapshots(self, tmp_path: "Path", capsys: pytest.CaptureFixture) -> None:
         from src.inspector_hudi import HudiInspector
 
-        snap_rows = [
-            {"fetched_at": "2026-04-01T12:00:00", "cnt": 100},
-        ]
-        mock_df = _mock_spark_df(snap_rows)
+        hoodie_dir = tmp_path / ".hoodie"
+        hoodie_dir.mkdir()
+        commit_data = {
+            "operationType": "UPSERT",
+            "partitionToWriteStats": {
+                "Montréal": [{"numInserts": 100, "numUpdateWrites": 50}]
+            },
+            "extraMetadata": {},
+        }
+        (hoodie_dir / "20260401120000000.commit").write_text(
+            __import__("json").dumps(commit_data)
+        )
 
-        inspector = HudiInspector(table_path="/tmp/fake_hudi")
-        with patch.object(inspector, "_read_table", return_value=mock_df):
-            inspector.show_snapshots()
+        inspector = HudiInspector(table_path=str(tmp_path))
+        inspector.show_snapshots()
 
         out = capsys.readouterr().out
-        assert "2026-04-01T12:00:00" in out
+        assert "20260401120000000" in out
+        assert "100" in out
+        assert "50" in out
 
     def test_show_snapshots_no_table(self, capsys: pytest.CaptureFixture) -> None:
         from src.inspector_hudi import HudiInspector
 
-        inspector = HudiInspector(table_path="/tmp/fake_hudi")
-        with patch.object(inspector, "_read_table", side_effect=Exception("nope")):
-            inspector.show_snapshots()
+        inspector = HudiInspector(table_path="/tmp/nonexistent_hudi_table_xyz")
+        inspector.show_snapshots()
 
         out = capsys.readouterr().out
-        assert "No snapshots yet." in out
+        assert "No commits yet." in out
 
     def test_file_not_found_shows_helpful_message(self, capsys: pytest.CaptureFixture) -> None:
         """FileNotFoundError from Spark must print a clear 'run main.py' message,

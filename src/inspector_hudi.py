@@ -1,5 +1,9 @@
 """Hudi implementation of the Jerry-Can data store inspector."""
 
+import json
+import os
+from datetime import datetime, timezone
+
 from pyspark.sql import functions as F
 
 from src.config import HUDI_TABLE_NAME, HUDI_TABLE_PATH
@@ -120,23 +124,38 @@ class HudiInspector(Inspector):
             print(f"{region:<40} {r['cnt']:>8}")
 
     def show_snapshots(self) -> None:
-        df = self._load_table("\nNo snapshots yet.")
-        if df is None:
+        hoodie_dir = os.path.join(self._table_path, ".hoodie")
+        if not os.path.isdir(hoodie_dir):
+            print("\nNo commits yet.")
             return
 
-        snaps = (
-            df.groupBy("fetched_at")
-            .agg(F.count("*").alias("cnt"))
-            .orderBy(F.desc("fetched_at"))
-            .limit(10)
-            .collect()
-        )
+        commits = []
+        for fname in sorted(os.listdir(hoodie_dir), reverse=True):
+            if not fname.endswith(".commit"):
+                continue
+            instant = fname[:-7]  # strip ".commit"
+            try:
+                # Hudi instant format: YYYYMMDDHHmmssSSS
+                ts = datetime.strptime(instant[:17].ljust(17, "0"), "%Y%m%d%H%M%S%f")
+                ts = ts.replace(tzinfo=timezone.utc)
+            except ValueError:
+                ts = None
+            try:
+                with open(os.path.join(hoodie_dir, fname)) as fh:
+                    data = json.load(fh)
+                stats = data.get("partitionToWriteStats", {})
+                inserts = sum(s.get("numInserts", 0) for p in stats.values() for s in p)
+                updates = sum(s.get("numUpdateWrites", 0) for p in stats.values() for s in p)
+            except Exception:
+                inserts = updates = 0
+            commits.append((instant, ts, inserts, updates))
 
-        if not snaps:
-            print("\nNo snapshots yet.")
+        if not commits:
+            print("\nNo commits yet.")
             return
 
-        print(f"\n{'Snapshot':<30} {'Records':>8}")
-        print("-" * 40)
-        for r in snaps:
-            print(f"{r['fetched_at']:<30} {r['cnt']:>8}")
+        print(f"\n{'Commit instant':<22} {'Timestamp (UTC)':<22} {'Inserts':>8} {'Updates':>8}")
+        print("-" * 64)
+        for instant, ts, ins, upd in commits[:10]:
+            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "?"
+            print(f"{instant:<22} {ts_str:<22} {ins:>8} {upd:>8}")
