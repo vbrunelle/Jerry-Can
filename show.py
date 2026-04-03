@@ -11,7 +11,7 @@ PERSISTENCE_BACKEND=sqlite python inspect.py /path/to/fuel_prices.db
 
 # Force Hudi (requires Java + Spark)
 PERSISTENCE_BACKEND=hudi python inspect.py
-PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 python inspect.py
+PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 python show.py
 PERSISTENCE_BACKEND=hudi python inspect.py /data/hudi/fuel_prices
 """
 

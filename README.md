@@ -78,10 +78,10 @@ python show.py
 python show.py /chemin/vers/fuel_prices.db
 
 # Backend Hudi (nécessite Java)
-PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 python show.py
+PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 python show.py
 
 # Hudi — chemin de table spécifique
-PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 python show.py /data/hudi/fuel_prices
+PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 python show.py /data/hudi/fuel_prices
 ```
 
 Affiche le schéma, le résumé, les snapshots, les régions et les derniers prix.

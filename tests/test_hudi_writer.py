@@ -1,8 +1,9 @@
 """Tests for the Hudi writer module.
 
-PySpark and the Hudi bundle are heavy runtime dependencies that may not be
-available in every environment.  These tests therefore **mock** the PySpark
-layer and verify that ``hudi_writer`` calls the Spark API correctly.
+Most tests in this module mock the PySpark layer and verify that
+``hudi_writer`` calls the Spark API correctly.  A small compatibility subset
+also imports real ``pyspark`` to confirm that the configured Hudi bundle
+matches the installed Spark version.
 """
 
 import re
