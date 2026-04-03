@@ -230,11 +230,11 @@ class SqliteInspector(Inspector):
         """
         with connect(self._db_path) as conn:
             rise_rows = conn.execute(
-                _CTE + "SELECT * FROM final ORDER BY delta DESC LIMIT ?",
+                _CTE + "SELECT * FROM final WHERE delta > 0 ORDER BY delta DESC LIMIT ?",
                 (limit,),
             ).fetchall()
             drop_rows = conn.execute(
-                _CTE + "SELECT * FROM final ORDER BY delta ASC LIMIT ?",
+                _CTE + "SELECT * FROM final WHERE delta < 0 ORDER BY delta ASC LIMIT ?",
                 (limit,),
             ).fetchall()
             changed_count = conn.execute(
