@@ -209,6 +209,9 @@ __marimo__/
 # SQLite database
 fuel_prices.db
 
+# Dossier de données persistées (bind mount Docker)
+data/
+
 # Apache Hudi / Spark local artifacts
 metastore_db/
 spark-warehouse/

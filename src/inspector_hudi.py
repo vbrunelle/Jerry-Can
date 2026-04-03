@@ -104,7 +104,8 @@ class HudiInspector(Inspector):
         if df is None:
             return
 
-        regions = (
+        # Station count per region
+        region_counts = (
             df.select("station_id", "region")
             .distinct()
             .groupBy("region")
@@ -113,15 +114,109 @@ class HudiInspector(Inspector):
             .collect()
         )
 
-        if not regions:
+        if not region_counts:
             print("\nNo stations yet.")
             return
 
-        print(f"\n{'Region':<40} {'Stations':>8}")
-        print("-" * 50)
-        for r in regions:
+        # Average price per (region, fuel_type) from latest snapshot
+        avg_rows = (
+            df.groupBy("region", "fuel_type")
+            .agg(F.round(F.avg("price"), 1).alias("avg_price"))
+            .collect()
+        )
+        # Build lookup: {region: {fuel_type: avg_price}}
+        avg_map: dict = {}
+        for row in avg_rows:
+            avg_map.setdefault(row["region"] or "N/A", {})[row["fuel_type"]] = row["avg_price"]
+
+        fuel_types = sorted({row["fuel_type"] for row in avg_rows})
+
+        col_w = 10
+        header = f"\n{'Région':<40} {'Stations':>8}"
+        for ft in fuel_types:
+            header += f"  {ft[:col_w]:>{col_w}}"
+        print(header)
+        print("-" * (50 + (col_w + 2) * len(fuel_types)))
+        for r in region_counts:
             region = r["region"] or "N/A"
-            print(f"{region:<40} {r['cnt']:>8}")
+            line = f"{region:<40} {r['cnt']:>8}"
+            prices = avg_map.get(region, {})
+            for ft in fuel_types:
+                val = prices.get(ft)
+                cell = f"{val:.1f}¢" if val is not None else "  —"
+                line += f"  {cell:>{col_w}}"
+            print(line)
+
+    def show_price_variations(self, limit: int = 10) -> None:
+        from pyspark.sql import Window
+        from src.reader import HudiReader
+
+        try:
+            df_changes = HudiReader(self._table_path).read_changes()
+        except Exception as exc:
+            if _is_missing_table_error(exc):
+                print(
+                    "\nNo price data yet.\n"
+                    f"  Table path '{self._table_path}' does not exist.\n"
+                    "  Run 'python main.py' with PERSISTENCE_BACKEND=hudi to collect data first."
+                )
+            else:
+                print(f"\nImpossible de lire l'historique CDC: {type(exc).__name__}")
+                print("  Les logs CDC sont peut-être corrompus. Supprimer le dossier data/ et relancer.")
+            return
+
+        # Only real price-change events: updates where price actually moved
+        df_pairs = df_changes.filter(
+            (F.col("op") == "u") & F.col("delta").isNotNull() & (F.col("delta") != 0)
+        )
+
+        if df_pairs.count() == 0:
+            print("\nNo price variations yet (need at least 2 snapshots).")
+            return
+
+        # Last actual change per station/fuel_type
+        w2 = Window.partitionBy("station_id", "fuel_type").orderBy(F.desc("fetched_at"))
+        df_last = (
+            df_pairs
+            .withColumn("rn", F.row_number().over(w2))
+            .filter(F.col("rn") == 1)
+            .drop("rn")
+        )
+
+        # Count stations that changed in the most recent commit
+        latest_ts = df_pairs.agg(F.max("fetched_at")).collect()[0][0]
+        changed_count = (
+            df_pairs
+            .filter(F.col("fetched_at") == latest_ts)
+            .select("station_id")
+            .distinct()
+            .count()
+        )
+
+        print(f"\n{changed_count} station(s) ont changé de prix lors du dernier snapshot.")
+
+        header = f"{'Station':<35} {'City':<18} {'Fuel':<10} {'Avant':>8} {'Après':>8} {'Δ':>7}  {'De':<20} {'À'}"
+        sep = "-" * 120
+
+        rises = df_last.orderBy(F.desc("delta")).limit(limit).collect()
+        drops = df_last.orderBy(F.asc("delta")).limit(limit).collect()
+
+        def _print_rows(title, rows_list):
+            print(f"\n=== {title} (top {limit}) ===")
+            print(header)
+            print(sep)
+            for r in rows_list:
+                delta = r["delta"] or 0
+                name = (r["station_name"] or "")[:34]
+                city = (r["city"] or "")[:17]
+                print(
+                    f"{name:<35} {city:<18} {r['fuel_type']:<10}"
+                    f" {r['prev_price']:>7.1f}¢ {r['price']:>7.1f}¢"
+                    f" {delta:+.1f}¢  {r['prev_fetched_at']:<20} {r['fetched_at']}"
+                )
+
+        _print_rows("Hausses", rises)
+        _print_rows("Baisses", drops)
 
     def show_snapshots(self) -> None:
         hoodie_dir = os.path.join(self._table_path, ".hoodie")
@@ -131,9 +226,12 @@ class HudiInspector(Inspector):
 
         commits = []
         for fname in sorted(os.listdir(hoodie_dir), reverse=True):
-            if not fname.endswith(".commit"):
+            if fname.endswith(".commit"):
+                instant = fname[:-7]  # strip ".commit"
+            elif fname.endswith(".deltacommit"):
+                instant = fname[:-12]  # strip ".deltacommit"
+            else:
                 continue
-            instant = fname[:-7]  # strip ".commit"
             try:
                 # Hudi instant format: YYYYMMDDHHmmssSSS
                 ts = datetime.strptime(instant[:17].ljust(17, "0"), "%Y%m%d%H%M%S%f")
@@ -154,8 +252,45 @@ class HudiInspector(Inspector):
             print("\nNo commits yet.")
             return
 
-        print(f"\n{'Commit instant':<22} {'Timestamp (UTC)':<22} {'Inserts':>8} {'Updates':>8}")
-        print("-" * 64)
+        # Count actual price changes per commit via CDC (MOR only).
+        # One Spark read, grouped by _hoodie_commit_time.
+        price_changes_by_commit: dict = {}
+        try:
+            from pyspark.sql import functions as F
+            cdc_df = (
+                _get_spark().read.format("hudi")
+                .option("hoodie.datasource.query.type", "incremental")
+                .option("hoodie.datasource.query.incremental.format", "cdc")
+                .option("hoodie.datasource.read.begin.instanttime", "000")
+                .load(self._table_path)
+            )
+            rows = (
+                cdc_df
+                .filter(F.col("op") == "u")
+                .withColumn("after_price",  F.get_json_object(F.col("after"),  "$.price").cast("double"))
+                .withColumn("before_price", F.get_json_object(F.col("before"), "$.price").cast("double"))
+                .filter(F.col("after_price") != F.col("before_price"))
+                .withColumn("commit_time", F.get_json_object(F.col("after"), "$._hoodie_commit_time"))
+                .groupBy("commit_time")
+                .agg(F.count("*").alias("n"))
+                .collect()
+            )
+            price_changes_by_commit = {r["commit_time"]: r["n"] for r in rows}
+        except Exception:
+            pass  # CDC not available (COW table or first commit)
+
+        has_cdc = bool(price_changes_by_commit)
+        if has_cdc:
+            print(f"\n{'Commit instant':<22} {'Timestamp (UTC)':<22} {'Inserts':>8} {'Updates':>8} {'Px changés':>10}")
+            print("-" * 76)
+        else:
+            print(f"\n{'Commit instant':<22} {'Timestamp (UTC)':<22} {'Inserts':>8} {'Updates':>8}")
+            print("-" * 64)
+
         for instant, ts, ins, upd in commits[:10]:
             ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "?"
-            print(f"{instant:<22} {ts_str:<22} {ins:>8} {upd:>8}")
+            if has_cdc:
+                px = price_changes_by_commit.get(instant, 0)
+                print(f"{instant:<22} {ts_str:<22} {ins:>8} {upd:>8} {px:>10}")
+            else:
+                print(f"{instant:<22} {ts_str:<22} {ins:>8} {upd:>8}")

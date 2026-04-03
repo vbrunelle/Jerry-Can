@@ -76,7 +76,8 @@ class TestMain:
 
         importlib.reload(main)
         mock_init.side_effect = RuntimeError("Java gateway process exited")
-        with patch.object(main, "init_db", mock_init):
+        with patch.object(main, "run_tests"), \
+             patch.object(main, "init_db", mock_init):
             with pytest.raises(RuntimeError, match="Java gateway"):
                 main.main()
 
@@ -99,7 +100,8 @@ class TestMain:
         mock_source_obj.fetch.return_value = [{"station_id": "ST001", "price": 175.0}]
         main.source = mock_source_obj
 
-        with patch.object(main, "init_db", mock_init), \
+        with patch.object(main, "run_tests"), \
+             patch.object(main, "init_db", mock_init), \
              patch.object(main, "save_snapshot", mock_save):
             # Simulate KeyboardInterrupt on first sleep to exit the while loop
             with patch("time.sleep", side_effect=KeyboardInterrupt):

@@ -1,8 +1,10 @@
 """Main entry point for the Jerry-Can fuel price collector."""
 
 import logging
+import sys
 import time
 
+import pytest
 import schedule
 
 from src.config import FETCH_INTERVAL_MINUTES, PERSISTENCE_BACKEND
@@ -40,8 +42,19 @@ def run_once() -> None:
         logger.error("Snapshot failed: %s", exc)
 
 
+def run_tests() -> None:
+    """Run unit tests before starting the collector. Aborts on failure."""
+    logger.info("Running unit tests before startup...")
+    result = pytest.main(["-m", "not integration", "-q", "--tb=short"])
+    if result != pytest.ExitCode.OK:
+        logger.error("Unit tests failed — aborting startup.")
+        sys.exit(1)
+    logger.info("All unit tests passed.")
+
+
 def main() -> None:
     """Initialise the database and start the periodic scheduler."""
+    run_tests()
     logger.info(
         "Jerry-Can starting up (persistence backend: %s).",
         PERSISTENCE_BACKEND,

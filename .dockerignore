@@ -18,8 +18,3 @@ ENV
 htmlcov
 .coverage
 fuel_prices.db
-tests
-pytest.ini
-requirements-dev.txt
-inspect_db.py
-README.md

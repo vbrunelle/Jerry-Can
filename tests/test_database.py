@@ -133,3 +133,104 @@ class TestSaveSnapshot:
                 for row in conn.execute("SELECT fuel_type FROM prices").fetchall()
             }
         assert fuel_types == {"regular", "diesel"}
+
+
+class TestPriceVariationRecording:
+    """Verify that price changes between two snapshots are correctly persisted."""
+
+    def test_single_station_price_rise_recorded(self, tmp_db: str) -> None:
+        """A price rise on one station out of six is persisted in both rows."""
+        records = _sample_records(6)
+        save_snapshot(records, tmp_db)
+
+        snapshot2 = [dict(r, fetched_at="2026-04-02T12:00:00") for r in records]
+        snapshot2[0]["price"] = records[0]["price"] + 8.0  # ST0001 rises 8¢
+        save_snapshot(snapshot2, tmp_db)
+
+        with connect(tmp_db) as conn:
+            rows = conn.execute(
+                "SELECT price FROM prices WHERE station_id = ? ORDER BY fetched_at",
+                ("ST0001",),
+            ).fetchall()
+
+        assert len(rows) == 2
+        assert rows[0]["price"] == pytest.approx(records[0]["price"])
+        assert rows[1]["price"] == pytest.approx(records[0]["price"] + 8.0)
+
+    def test_single_station_price_drop_recorded(self, tmp_db: str) -> None:
+        """A price drop on one station out of six is persisted in both rows."""
+        records = _sample_records(6)
+        save_snapshot(records, tmp_db)
+
+        snapshot2 = [dict(r, fetched_at="2026-04-02T12:00:00") for r in records]
+        snapshot2[2]["price"] = records[2]["price"] - 4.5  # ST0003 drops 4.5¢
+        save_snapshot(snapshot2, tmp_db)
+
+        with connect(tmp_db) as conn:
+            rows = conn.execute(
+                "SELECT price FROM prices WHERE station_id = ? ORDER BY fetched_at",
+                ("ST0003",),
+            ).fetchall()
+
+        assert len(rows) == 2
+        assert rows[0]["price"] == pytest.approx(records[2]["price"])
+        assert rows[1]["price"] == pytest.approx(records[2]["price"] - 4.5)
+
+    def test_two_stations_opposite_changes_recorded(self, tmp_db: str) -> None:
+        """Both a rise and a drop on two different stations out of six are persisted."""
+        records = _sample_records(6)
+        save_snapshot(records, tmp_db)
+
+        snapshot2 = [dict(r, fetched_at="2026-04-02T12:00:00") for r in records]
+        snapshot2[1]["price"] = records[1]["price"] + 5.0   # ST0002 rises 5¢
+        snapshot2[4]["price"] = records[4]["price"] - 3.0   # ST0005 drops 3¢
+        save_snapshot(snapshot2, tmp_db)
+
+        with connect(tmp_db) as conn:
+            st0002 = conn.execute(
+                "SELECT price FROM prices WHERE station_id = ? ORDER BY fetched_at",
+                ("ST0002",),
+            ).fetchall()
+            st0005 = conn.execute(
+                "SELECT price FROM prices WHERE station_id = ? ORDER BY fetched_at",
+                ("ST0005",),
+            ).fetchall()
+
+        assert len(st0002) == 2
+        assert st0002[1]["price"] == pytest.approx(st0002[0]["price"] + 5.0)
+
+        assert len(st0005) == 2
+        assert st0005[1]["price"] == pytest.approx(st0005[0]["price"] - 3.0)
+
+    def test_unchanged_stations_have_identical_prices(self, tmp_db: str) -> None:
+        """The four stations with no price change record the same price in both snapshots."""
+        records = _sample_records(6)
+        save_snapshot(records, tmp_db)
+
+        snapshot2 = [dict(r, fetched_at="2026-04-02T12:00:00") for r in records]
+        snapshot2[0]["price"] = records[0]["price"] + 10.0  # only ST0001 changes
+        snapshot2[3]["price"] = records[3]["price"] - 2.0   # only ST0004 changes
+        save_snapshot(snapshot2, tmp_db)
+
+        unchanged_ids = ["ST0002", "ST0003", "ST0005", "ST0006"]
+        with connect(tmp_db) as conn:
+            for station_id in unchanged_ids:
+                rows = conn.execute(
+                    "SELECT price FROM prices WHERE station_id = ? ORDER BY fetched_at",
+                    (station_id,),
+                ).fetchall()
+                assert len(rows) == 2, f"{station_id} should have 2 price rows"
+                assert rows[0]["price"] == pytest.approx(rows[1]["price"]), (
+                    f"{station_id} should have identical prices in both snapshots"
+                )
+
+    def test_total_rows_after_two_snapshots(self, tmp_db: str) -> None:
+        """Two snapshots of 6 stations produce exactly 12 price rows."""
+        records = _sample_records(6)
+        save_snapshot(records, tmp_db)
+        snapshot2 = [dict(r, fetched_at="2026-04-02T12:00:00") for r in records]
+        save_snapshot(snapshot2, tmp_db)
+
+        with connect(tmp_db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
+        assert count == 12

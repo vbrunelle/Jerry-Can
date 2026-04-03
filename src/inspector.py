@@ -27,6 +27,10 @@ class Inspector(ABC):
     def show_snapshots(self) -> None:
         """Print the most recent snapshots with record counts."""
 
+    @abstractmethod
+    def show_price_variations(self, limit: int = 10) -> None:
+        """Print the largest price increases and decreases per station."""
+
     def show_all(self) -> None:
         """Convenience method — run every report in order."""
         self.show_schema()
@@ -34,3 +38,4 @@ class Inspector(ABC):
         self.show_snapshots()
         self.show_regions()
         self.show_latest_prices()
+        self.show_price_variations()

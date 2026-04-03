@@ -41,10 +41,23 @@ HUDI_OPTIONS: dict[str, str] = {
     "hoodie.datasource.write.recordkey.field": "station_id,fuel_type",
     "hoodie.datasource.write.precombine.field": "fetched_at",
     "hoodie.datasource.write.operation": "upsert",
-    "hoodie.datasource.write.table.type": "COPY_ON_WRITE",
+    "hoodie.datasource.write.table.type": "MERGE_ON_READ",
     "hoodie.datasource.write.partitionpath.field": "region",
     "hoodie.upsert.shuffle.parallelism": HUDI_PARALLELISM,
     "hoodie.insert.shuffle.parallelism": HUDI_PARALLELISM,
+    # CDC — capture before/after values natively for every upsert.
+    # Must be set at table creation; requires DATA_BEFORE_AFTER to expose
+    # the full row delta (before.price, after.price, op, ts_ms).
+    "hoodie.table.cdc.enabled": "true",
+    "hoodie.table.cdc.supplemental.logging.mode": "DATA_BEFORE_AFTER",
+    # Disable automatic cleaning so that CDC log files (and old file
+    # versions) are never deleted.  This preserves the full price-change
+    # history accessible via read_changes().  Storage impact is negligible
+    # for a dataset of this size (~3 000 stations × 3 fuel types).
+    "hoodie.clean.automatic": "false",
+    # Also disable automatic archival of the commit timeline so that ALL
+    # commit instants remain visible to CDC / incremental queries.
+    "hoodie.archive.automatic": "false",
 }
 
 # Hudi Spark bundle Maven coordinates (auto-downloaded by Spark).
@@ -162,7 +175,61 @@ def save_snapshot(
     )
 
     logger.info("Saved %d price records via Hudi upsert.", len(normalised))
+
+    # --- Detect and delete stations that disappeared from the source ------
+    deleted = _delete_missing_stations(spark, df, table_path)
+    if deleted > 0:
+        logger.info("Deleted %d records for stations no longer in the source.", deleted)
+
     return len(normalised)
+
+
+def _delete_missing_stations(
+    spark: Any,
+    current_df: Any,
+    table_path: str,
+) -> int:
+    """Delete Hudi rows whose (station_id, fuel_type) is absent from *current_df*.
+
+    After a successful upsert the Hudi table contains the latest state.
+    Any (station_id, fuel_type) key present in the table but **not** in the
+    current batch means that station/fuel combination has disappeared from
+    the upstream data source.
+
+    Issuing an explicit Hudi ``delete`` for those rows produces ``op="d"``
+    entries in the CDC log, making disappearances visible in the change
+    history.
+
+    Returns the number of deleted records.
+    """
+    try:
+        existing_df = (
+            spark.read.format("hudi")
+            .load(table_path)
+            .select("station_id", "fuel_type", "region")
+        )
+    except Exception:  # noqa: BLE001
+        # Table doesn't exist yet (first run) — nothing to delete.
+        return 0
+
+    current_keys = current_df.select("station_id", "fuel_type").distinct()
+    to_delete = (
+        existing_df
+        .join(current_keys, on=["station_id", "fuel_type"], how="left_anti")
+    )
+
+    count = to_delete.count()
+    if count == 0:
+        return 0
+
+    delete_opts = {**HUDI_OPTIONS, "hoodie.datasource.write.operation": "delete"}
+    (
+        to_delete.write.format("hudi")
+        .options(**delete_opts)
+        .mode("append")
+        .save(table_path)
+    )
+    return count
 
 
 def get_snapshot_at(
