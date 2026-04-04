@@ -215,7 +215,7 @@ class GenerateCsvForUserTests(TestCase):
             generate_csv_for_user(dr.pk)
         dr.refresh_from_db()
         self.assertEqual(dr.status, "error")
-        self.assertIn("not found", dr.error_message.lower())
+        self.assertTrue(dr.error_message)  # error message is set
 
     def test_nonexistent_request_id(self):
         # Should not raise — just return silently

@@ -20,14 +20,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-c@91ch!5rxuvtu@mgll%g^e--*s!b7nfwh#6=*6x(25evvw)y3',
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 'yes')
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# In production (DEBUG=False), DJANGO_SECRET_KEY is required — startup will
+# fail if it is missing to prevent accidental use of a known key.
+_SECRET_KEY_ENV = os.environ.get('DJANGO_SECRET_KEY')
+if not _SECRET_KEY_ENV and not DEBUG:
+    raise RuntimeError(
+        'DJANGO_SECRET_KEY environment variable is required when DEBUG is False. '
+        'Generate one with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"'
+    )
+SECRET_KEY = _SECRET_KEY_ENV or 'django-insecure-c@91ch!5rxuvtu@mgll%g^e--*s!b7nfwh#6=*6x(25evvw)y3'
 
 ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
