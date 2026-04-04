@@ -287,6 +287,43 @@ class InspectionViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.context["data"])
 
+    def test_default_inspection_interval(self):
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["inspection_interval"], 5)
+
+    @patch.dict(os.environ, {"INSPECTION_REFRESH_INTERVAL_MINUTES": "15"})
+    def test_custom_inspection_interval(self):
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["inspection_interval"], 15)
+
+
+# ---------------------------------------------------------------------------
+# Helper function tests — _get_inspection_interval / _next_cron_run
+# ---------------------------------------------------------------------------
+class InspectionIntervalHelperTests(TestCase):
+    """Tests for inspection interval helper functions."""
+
+    def test_default_inspection_interval(self):
+        from dashboard.views import _get_inspection_interval
+        self.assertEqual(_get_inspection_interval(), 5)
+
+    @patch.dict(os.environ, {"INSPECTION_REFRESH_INTERVAL_MINUTES": "10"})
+    def test_custom_inspection_interval(self):
+        from dashboard.views import _get_inspection_interval
+        self.assertEqual(_get_inspection_interval(), 10)
+
+    @patch.dict(os.environ, {"INSPECTION_REFRESH_INTERVAL_MINUTES": "15"})
+    def test_next_cron_run_uses_custom_interval(self):
+        from dashboard.views import _next_cron_run
+        now = timezone.now()
+        next_run = _next_cron_run()
+        # next_run should be within 15 minutes from now
+        self.assertLessEqual(next_run, now + timedelta(minutes=15))
+        # next_run minute should be a multiple of 15
+        self.assertEqual(next_run.minute % 15, 0)
+
 
 # ---------------------------------------------------------------------------
 # View tests — request_download

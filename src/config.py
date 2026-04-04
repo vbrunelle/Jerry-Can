@@ -24,6 +24,11 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "fuel_prices.db")
 # Fetch interval in minutes
 FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "5"))
 
+# Inspection cache refresh interval in minutes (cron job in management server)
+INSPECTION_REFRESH_INTERVAL_MINUTES = int(
+    os.getenv("INSPECTION_REFRESH_INTERVAL_MINUTES", "5")
+)
+
 # HTTP request timeout in seconds
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 

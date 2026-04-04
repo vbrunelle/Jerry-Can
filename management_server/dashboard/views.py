@@ -32,13 +32,19 @@ def _cache_needs_refresh(cache):
     return False
 
 
+def _get_inspection_interval():
+    """Return the configured inspection refresh interval in minutes."""
+    return int(os.environ.get("INSPECTION_REFRESH_INTERVAL_MINUTES", "5"))
+
+
 def _next_cron_run():
-    """Return the next scheduled run time for a */5 cron job."""
+    """Return the next scheduled run time for the inspection cron job."""
+    interval = _get_inspection_interval()
     now = timezone.now()
-    # Round up to the next multiple of 5 minutes
-    minutes_to_next = 5 - (now.minute % 5)
-    if minutes_to_next == 5:
-        minutes_to_next = 0  # already on a boundary — next is in 5 min
+    # Round up to the next multiple of `interval` minutes
+    minutes_to_next = interval - (now.minute % interval)
+    if minutes_to_next == interval:
+        minutes_to_next = 0  # already on a boundary
     next_run = (now + timedelta(minutes=minutes_to_next)).replace(second=0, microsecond=0)
     return next_run
 
@@ -76,6 +82,7 @@ def inspection(request):
         'refresh_started_at': refresh_started_at,
         'next_refresh': next_refresh,
         'estimated_completion': estimated_completion,
+        'inspection_interval': _get_inspection_interval(),
     }
     return render(request, 'dashboard/inspection.html', context)
 
