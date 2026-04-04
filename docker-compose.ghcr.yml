@@ -1,7 +1,13 @@
+# Example Docker Compose file that uses the pre-built images published on
+# GitHub Container Registry (ghcr.io) instead of building locally.
+#
+# Usage:
+#   docker compose -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.ghcr.yml up -d
+
 services:
   jerry-can:
     image: ghcr.io/vbrunelle/jerry-can:latest
-    build: .
     env_file:
       - path: .env
         required: false
@@ -18,9 +24,7 @@ services:
       - internal
 
   django:
-    build:
-      context: .
-      dockerfile: management_server/Dockerfile
+    image: ghcr.io/vbrunelle/jerry-can-management:latest
     env_file:
       - path: .env
         required: false
@@ -59,4 +63,3 @@ volumes:
 networks:
   internal:
     driver: bridge
-
