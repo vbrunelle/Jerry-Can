@@ -2,20 +2,18 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends cron && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt ./
+COPY management_server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY manage.py ./
-COPY jerrycan_web/ jerrycan_web/
-COPY accounts/ accounts/
-COPY dashboard/ dashboard/
+COPY management_server/manage.py ./
+COPY management_server/jerrycan_web/ jerrycan_web/
+COPY management_server/accounts/ accounts/
+COPY management_server/dashboard/ dashboard/
 
-# price_history module for Hudi-based CSV exports
-COPY price_history.py ./
+# Shared price_history module (single source of truth from src/)
+COPY src/price_history.py ./
 
-COPY entrypoint.sh ./
+COPY management_server/entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 VOLUME ["/data"]

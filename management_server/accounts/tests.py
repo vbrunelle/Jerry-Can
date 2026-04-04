@@ -293,3 +293,41 @@ class CreateInitialAdminCommandTests(TestCase):
         os.environ.pop("DJANGO_ADMIN_PASSWORD", None)
         call_command("create_initial_admin")
         self.assertFalse(User.objects.filter(username="admin").exists())
+
+
+# ---------------------------------------------------------------------------
+# ForcePasswordChangeMiddleware tests
+# ---------------------------------------------------------------------------
+class ForcePasswordChangeMiddlewareTests(TestCase):
+    """Tests for the ForcePasswordChangeMiddleware."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username="testuser",
+            password="testpass123",
+            must_change_password=True,
+        )
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_redirects_to_change_password_from_home(self):
+        response = self.client.get(reverse("home"))
+        self.assertRedirects(response, reverse("change_password"))
+
+    def test_redirects_to_change_password_from_inspection(self):
+        response = self.client.get(reverse("inspection"))
+        self.assertRedirects(response, reverse("change_password"))
+
+    def test_allows_change_password_page(self):
+        response = self.client.get(reverse("change_password"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_allows_logout(self):
+        response = self.client.get(reverse("logout"))
+        self.assertRedirects(response, reverse("login"))
+
+    def test_no_redirect_after_password_changed(self):
+        self.user.must_change_password = False
+        self.user.save()
+        response = self.client.get(reverse("home"))
+        self.assertEqual(response.status_code, 200)

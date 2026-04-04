@@ -17,7 +17,9 @@ services:
     #   PERSISTENCE_BACKEND: sqlite
 
   django:
-    build: ./management_server
+    build:
+      context: .
+      dockerfile: management_server/Dockerfile
     env_file:
       - path: .env
         required: false
