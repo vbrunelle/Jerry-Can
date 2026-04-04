@@ -7,7 +7,7 @@
 
 services:
   jerry-can:
-    image: ghcr.io/vbrunelle/jerry-can:latest
+    image: ghcr.io/vbrunelle/jerry-can:main
     env_file:
       - path: .env
         required: false
@@ -24,7 +24,7 @@ services:
       - internal
 
   django:
-    image: ghcr.io/vbrunelle/jerry-can-management:latest
+    image: ghcr.io/vbrunelle/jerry-can-management:main
     env_file:
       - path: .env
         required: false
