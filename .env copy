@@ -1,0 +1,6 @@
+# Deprecated duplicate env template.
+# Do not use this file as configuration.
+# Use `.env.example` as the canonical template and copy it to `.env` for local development.
+#
+# This file is intentionally left without active environment variable assignments
+# to avoid confusion with the real example configuration.

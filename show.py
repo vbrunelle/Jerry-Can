@@ -9,9 +9,8 @@ python show.py
 PERSISTENCE_BACKEND=sqlite python show.py
 PERSISTENCE_BACKEND=sqlite python show.py /path/to/fuel_prices.db
 
-# Force Hudi (requires Java + Spark)
+# Force Hudi (uses fast pandas reader by default, falls back to Spark)
 PERSISTENCE_BACKEND=hudi python show.py
-PERSISTENCE_BACKEND=hudi JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 python show.py
 PERSISTENCE_BACKEND=hudi python show.py /data/hudi/fuel_prices
 """
 
@@ -20,7 +19,10 @@ import sys
 from src.config import DATABASE_PATH, HUDI_TABLE_PATH, PERSISTENCE_BACKEND
 
 if PERSISTENCE_BACKEND == "hudi":
-    from src.inspector_hudi import HudiInspector as _Inspector  # type: ignore[assignment]
+    try:
+        from src.inspector_pandas import PandasHudiInspector as _Inspector  # type: ignore[assignment]
+    except ImportError:
+        from src.inspector_hudi import HudiInspector as _Inspector  # type: ignore[assignment]
     _target = sys.argv[1] if len(sys.argv) > 1 else HUDI_TABLE_PATH
 else:
     from src.inspector_sqlite import SqliteInspector as _Inspector  # type: ignore[assignment]

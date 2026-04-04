@@ -5,11 +5,58 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      DATABASE_PATH: /data/fuel_prices.db
+      # Hudi is the default backend. Uncomment below to fall back to SQLite:
+      # PERSISTENCE_BACKEND: sqlite
     volumes:
       - type: bind
         source: ${DATA_DIR:-./data}
         target: /data
     restart: unless-stopped
-    # Hudi is the default backend. Uncomment below to fall back to SQLite:
-    # environment:
-    #   PERSISTENCE_BACKEND: sqlite
+    networks:
+      - internal
+
+  django:
+    build:
+      context: .
+      dockerfile: management_server/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: jerrycan_web.settings
+      DJANGO_DB_PATH: /data/django_db.sqlite3
+      DATABASE_PATH: /data/fuel_prices.db
+      HUDI_TABLE_PATH: /data/hudi/fuel_prices
+      PERSISTENCE_BACKEND: ${PERSISTENCE_BACKEND:-sqlite}
+    volumes:
+      - type: bind
+        source: ${DATA_DIR:-./data}
+        target: /data
+      - django-static:/app/staticfiles
+    restart: unless-stopped
+    depends_on:
+      - jerry-can
+    networks:
+      - internal
+
+  nginx:
+    build: ./nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - django-static:/app/staticfiles:ro
+    restart: unless-stopped
+    depends_on:
+      - django
+    networks:
+      - internal
+
+volumes:
+  django-static:
+
+networks:
+  internal:
+    driver: bridge
+

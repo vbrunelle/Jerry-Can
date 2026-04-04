@@ -58,6 +58,11 @@ HUDI_OPTIONS: dict[str, str] = {
     # Also disable automatic archival of the commit timeline so that ALL
     # commit instants remain visible to CDC / incremental queries.
     "hoodie.archive.automatic": "false",
+    # Inline compaction: compact MOR delta log files into base Parquet
+    # files every N commits.  Without this, log files accumulate and
+    # snapshot reads become extremely slow (must merge all log files).
+    "hoodie.compact.inline": "true",
+    "hoodie.compact.inline.max.delta.commits": "5",
 }
 
 # Hudi Spark bundle Maven coordinates (auto-downloaded by Spark).
@@ -81,6 +86,7 @@ def _get_spark() -> Any:
 
         _spark = (
             SparkSession.builder
+            .master("local[1]")
             .appName("JerryCan")
             .config(
                 "spark.jars.packages",
@@ -98,6 +104,19 @@ def _get_spark() -> Any:
                 "spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.hudi.catalog.HoodieCatalog",
             )
+            .config(
+                "spark.driver.extraJavaOptions",
+                "-Djol.skipHotspot=true -Djdk.attach.allowAttachSelf=true",
+            )
+            .config(
+                "spark.executor.extraJavaOptions",
+                "-Djol.skipHotspot=true -Djdk.attach.allowAttachSelf=true",
+            )
+            .config("spark.ui.enabled", "false")
+            .config("spark.sql.shuffle.partitions", "2")
+            .config("spark.default.parallelism", "1")
+            .config("spark.driver.memory", "512m")
+            .config("spark.log.level", "WARN")
             .getOrCreate()
         )
     return _spark

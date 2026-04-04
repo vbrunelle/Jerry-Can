@@ -49,10 +49,14 @@ def show_price_variations(db_path: str = DATABASE_PATH, limit: int = 10) -> None
 
 def main() -> None:
     if PERSISTENCE_BACKEND == "hudi":
-        from src.inspector_hudi import HudiInspector
-
-        table_path = sys.argv[1] if len(sys.argv) > 1 else HUDI_TABLE_PATH
-        inspector = HudiInspector(table_path)
+        try:
+            from src.inspector_pandas import PandasHudiInspector
+            table_path = sys.argv[1] if len(sys.argv) > 1 else HUDI_TABLE_PATH
+            inspector = PandasHudiInspector(table_path)
+        except ImportError:
+            from src.inspector_hudi import HudiInspector
+            table_path = sys.argv[1] if len(sys.argv) > 1 else HUDI_TABLE_PATH
+            inspector = HudiInspector(table_path)
     else:
         db_path = sys.argv[1] if len(sys.argv) > 1 else DATABASE_PATH
         inspector = SqliteInspector(db_path)

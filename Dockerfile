@@ -18,6 +18,7 @@ COPY pytest.ini .
 COPY inspect_db.py .
 COPY show.py .
 COPY dump_csv.py .
+COPY backfill_history.py .
 COPY main.py .
 
 VOLUME ["/data"]
