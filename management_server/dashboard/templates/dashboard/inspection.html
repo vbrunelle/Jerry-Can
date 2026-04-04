@@ -15,7 +15,10 @@
 {% if not data %}
 <div class="card mt-3">
     <div class="card-body">
-        <p class="text-secondary">Aucune donnée en cache. Le rafraîchissement automatique se fait toutes les 15 minutes.</p>
+        <div class="d-flex align-items-center gap-2">
+            <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
+            <span class="text-secondary">Cache en cours de chargement. Réessayez dans une minute (rafraîchissement automatique toutes les minutes).</span>
+        </div>
     </div>
 </div>
 {% else %}

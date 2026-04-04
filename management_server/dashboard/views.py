@@ -32,17 +32,11 @@ def _cache_needs_refresh(cache):
 
 @login_required
 def inspection(request):
-    from dashboard.services import refresh_inspection_cache
-    cache = InspectionCache.objects.first()
-    if _cache_needs_refresh(cache):
-        try:
-            refresh_inspection_cache()
-            cache = InspectionCache.objects.first()
-        except Exception:
-            pass
+    cache = InspectionCache.objects.order_by('-created_at').first()
     context = {
         'data': cache.data if cache else None,
         'last_updated': cache.created_at if cache else None,
+        'cache_warming': cache is None or _cache_needs_refresh(cache),
     }
     return render(request, 'dashboard/inspection.html', context)
 
