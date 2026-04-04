@@ -9,16 +9,31 @@ _stop_event = threading.Event()
 
 REFRESH_INTERVAL = 900   # 15 minutes
 CLEANUP_INTERVAL = 3600  # 1 hour
+RETRY_INTERVAL = 30      # retry every 30s until data is available
+
+
+def _has_data():
+    """Return True if the inspection cache contains at least one price record."""
+    from dashboard.models import InspectionCache
+    cache = InspectionCache.objects.order_by('-created_at').first()
+    return bool(cache and cache.data.get('summary', {}).get('price_count', 0) > 0)
 
 
 def _background_worker():
     """Periodically refresh cache and clean up expired downloads."""
     from dashboard.services import cleanup_expired_downloads, refresh_inspection_cache
 
-    try:
-        refresh_inspection_cache()
-    except Exception:
-        pass
+    # Initial load — retry every RETRY_INTERVAL seconds until jerry-can has
+    # written at least one snapshot to fuel_prices.db (it may still be
+    # running unit tests or the first Hudi/SQLite write when Django boots).
+    while not _stop_event.is_set():
+        try:
+            refresh_inspection_cache()
+        except Exception:
+            pass
+        if _has_data() or _stop_event.is_set():
+            break
+        _stop_event.wait(timeout=RETRY_INTERVAL)
 
     last_cleanup = time.monotonic()
 

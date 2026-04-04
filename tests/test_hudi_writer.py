@@ -132,6 +132,7 @@ class TestGetSpark:
         with patch.dict("sys.modules", {"pyspark.sql": MagicMock()}):
             # Make the lazy import of SparkSession raise on getOrCreate
             fake_builder = MagicMock()
+            fake_builder.master.return_value = fake_builder
             fake_builder.appName.return_value = fake_builder
             fake_builder.config.return_value = fake_builder
             fake_builder.getOrCreate.side_effect = RuntimeError(

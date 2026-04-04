@@ -1,0 +1,21 @@
+# ── Data source ──────────────────────────────────────────────────────────────
+GEOJSON_URL=https://regieessencequebec.ca/stations.geojson.gz
+
+# ── Fetch behaviour ───────────────────────────────────────────────────────────
+FETCH_INTERVAL_MINUTES=5
+REQUEST_TIMEOUT=30
+
+# ── Persistence backend: "hudi" (default) or "sqlite" ────────────────────────
+PERSISTENCE_BACKEND=hudi
+
+# ── Dossier hôte où les données sont persistées entre les runs ───────────────
+# Chemin relatif (depuis le projet) ou absolu.
+DATA_DIR=./data
+
+# ── SQLite (used only when PERSISTENCE_BACKEND=sqlite) ───────────────────────
+DATABASE_PATH=/data/fuel_prices.db
+
+# ── Apache Hudi (used only when PERSISTENCE_BACKEND=hudi) ────────────────────
+HUDI_TABLE_PATH=/data/hudi/fuel_prices
+HUDI_TABLE_NAME=fuel_prices
+HUDI_PARALLELISM=2

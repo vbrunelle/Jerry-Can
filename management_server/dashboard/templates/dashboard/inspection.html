@@ -123,7 +123,7 @@
         <div class="table-responsive">
             <table class="table table-vcenter table-striped">
                 <thead>
-                    <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th></tr>
+                    <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th><th>De</th><th>À</th></tr>
                 </thead>
                 <tbody>
                     {% for v in data.price_variations.increases %}
@@ -134,6 +134,8 @@
                         <td>{{ v.prev_price }}¢</td>
                         <td>{{ v.price }}¢</td>
                         <td><span class="text-danger">+{{ v.delta }}¢</span></td>
+                        <td class="text-secondary">{{ v.prev_fetched_at|default:"—" }}</td>
+                        <td class="text-secondary">{{ v.fetched_at|default:"—" }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -145,7 +147,7 @@
         <div class="table-responsive">
             <table class="table table-vcenter table-striped">
                 <thead>
-                    <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th></tr>
+                    <tr><th>Station</th><th>Ville</th><th>Type</th><th>Avant</th><th>Après</th><th>Δ</th><th>De</th><th>À</th></tr>
                 </thead>
                 <tbody>
                     {% for v in data.price_variations.decreases %}
@@ -156,6 +158,8 @@
                         <td>{{ v.prev_price }}¢</td>
                         <td>{{ v.price }}¢</td>
                         <td><span class="text-success">{{ v.delta }}¢</span></td>
+                        <td class="text-secondary">{{ v.prev_fetched_at|default:"—" }}</td>
+                        <td class="text-secondary">{{ v.fetched_at|default:"—" }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
