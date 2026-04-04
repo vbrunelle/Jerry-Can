@@ -5,6 +5,10 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      DATABASE_PATH: /data/fuel_prices.db
+      # Hudi is the default backend. Uncomment below to fall back to SQLite:
+      # PERSISTENCE_BACKEND: sqlite
     volumes:
       - type: bind
         source: ${DATA_DIR:-./data}
@@ -12,9 +16,6 @@ services:
     restart: unless-stopped
     networks:
       - internal
-    # Hudi is the default backend. Uncomment below to fall back to SQLite:
-    # environment:
-    #   PERSISTENCE_BACKEND: sqlite
 
   django:
     build:
