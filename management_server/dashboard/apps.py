@@ -27,7 +27,10 @@ class DashboardConfig(AppConfig):
                     try:
                         cleanup_expired_downloads()
                     except Exception:
-                        pass
+                        import logging
+                        logging.getLogger(__name__).exception(
+                            "Error during expired download cleanup"
+                        )
 
                 _stop_event.wait(timeout=900)  # 15 minutes
 
