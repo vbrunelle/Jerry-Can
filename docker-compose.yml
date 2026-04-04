@@ -18,6 +18,7 @@ services:
       - internal
 
   django:
+    image: ghcr.io/vbrunelle/jerry-can-management:latest
     build:
       context: .
       dockerfile: management_server/Dockerfile
