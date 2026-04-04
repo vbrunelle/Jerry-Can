@@ -169,60 +169,45 @@ class PandasHudiInspector(Inspector):
             print(line)
 
     def show_price_variations(self, limit: int = 10) -> None:
-        df = self._load()
-        if df is None or df.empty:
-            print("\nNo price data yet.")
+        from src.price_history import get_latest_changes_summary
+
+        try:
+            summary = get_latest_changes_summary(self._table_path, limit=limit)
+        except Exception as exc:
+            print(f"\nImpossible d'afficher les variations de prix: {exc}")
             return
 
-        if df["fetched_at"].nunique() < 2:
+        total = summary["total_changes"]
+        if total == 0:
             print("\nNo price variations yet (need at least 2 snapshots).")
             return
 
-        # Sort and compute lag
-        df_sorted = df.sort_values(["station_id", "fuel_type", "fetched_at"])
-        df_sorted["prev_price"] = df_sorted.groupby(["station_id", "fuel_type"])["price"].shift(1)
-        df_sorted["prev_fetched_at"] = df_sorted.groupby(["station_id", "fuel_type"])["fetched_at"].shift(1)
+        print(
+            f"\n{total} changement(s) de prix sur {summary['commit_count']} commits"
+            f" ({summary['latest_changed_count']} dans le dernier commit)."
+        )
 
-        # Only rows with actual price changes
-        df_pairs = df_sorted.dropna(subset=["prev_price"])
-        df_pairs = df_pairs.copy()
-        df_pairs["delta"] = (df_pairs["price"] - df_pairs["prev_price"]).round(2)
-        df_pairs = df_pairs[df_pairs["delta"] != 0]
+        header = f"{'Station':<35} {'City':<18} {'Fuel':<10} {'Avant':>8} {'Après':>8} {'Δ':>7}  {'Date'}"
+        sep = "-" * 110
 
-        if df_pairs.empty:
-            print("\nNo price variations yet (need at least 2 snapshots).")
-            return
-
-        latest_ts = df_pairs["fetched_at"].max()
-        changed_count = df_pairs[df_pairs["fetched_at"] == latest_ts]["station_id"].nunique()
-        print(f"\n{changed_count} station(s) ont changé de prix lors du dernier snapshot.")
-
-        # Last change per station/fuel_type
-        idx = df_pairs.groupby(["station_id", "fuel_type"])["fetched_at"].idxmax()
-        df_last = df_pairs.loc[idx]
-
-        header = f"{'Station':<35} {'City':<18} {'Fuel':<10} {'Avant':>8} {'Après':>8} {'Δ':>7}  {'De':<20} {'À'}"
-        sep = "-" * 120
-
-        rises = df_last.nlargest(limit, "delta")
-        drops = df_last.nsmallest(limit, "delta")
-
-        def _print_rows(title, rows_df):
+        def _print_rows(title, rows_list):
             print(f"\n=== {title} (top {limit}) ===")
             print(header)
             print(sep)
-            for _, r in rows_df.iterrows():
-                delta = r["delta"] or 0
+            for r in rows_list:
+                delta = r.get("delta") or 0
                 name = (r.get("station_name") or "")[:34]
                 city = (r.get("city") or "")[:17]
+                prev = r.get("prev_price")
+                prev_str = f"{prev:>7.1f}¢" if prev is not None else "    N/A"
                 print(
                     f"{name:<35} {city:<18} {r['fuel_type']:<10}"
-                    f" {r['prev_price']:>7.1f}¢ {r['price']:>7.1f}¢"
-                    f" {delta:+.1f}¢  {r['prev_fetched_at']:<20} {r['fetched_at']}"
+                    f" {prev_str} {r['price']:>7.1f}¢"
+                    f" {delta:+.1f}¢  {r.get('fetched_at', '?')}"
                 )
 
-        _print_rows("Hausses", rises)
-        _print_rows("Baisses", drops)
+        _print_rows("Hausses", summary["rises"])
+        _print_rows("Baisses", summary["drops"])
 
     def show_snapshots(self) -> None:
         hoodie_dir = os.path.join(self._table_path, ".hoodie")
