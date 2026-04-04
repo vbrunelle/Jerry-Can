@@ -1,5 +1,7 @@
+import os
 import threading
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -8,7 +10,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from dashboard.models import DownloadRequest, InspectionCache
-from dashboard.services import generate_csv_for_user
+from dashboard.services import generate_csv_for_user, _REFRESH_RUNNING_FILE
 
 
 @login_required
@@ -30,13 +32,50 @@ def _cache_needs_refresh(cache):
     return False
 
 
+def _next_cron_run():
+    """Return the next scheduled run time for a */5 cron job."""
+    now = timezone.now()
+    # Round up to the next multiple of 5 minutes
+    minutes_to_next = 5 - (now.minute % 5)
+    if minutes_to_next == 5:
+        minutes_to_next = 0  # already on a boundary — next is in 5 min
+    next_run = (now + timedelta(minutes=minutes_to_next)).replace(second=0, microsecond=0)
+    return next_run
+
+
 @login_required
 def inspection(request):
     cache = InspectionCache.objects.order_by('-created_at').first()
+
+    # Detect if a refresh is currently running and when it started
+    refresh_started_at = None
+    try:
+        with open(_REFRESH_RUNNING_FILE) as f:
+            ts = float(f.read().strip())
+        refresh_started_at = datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+    except (OSError, ValueError):
+        pass
+
+    last_duration = cache.duration_seconds if cache else None
+    next_refresh = None if refresh_started_at else _next_cron_run()
+
+    # Estimated completion:
+    # - if running:   start_time + last_duration
+    # - if idle:      next_refresh + last_duration
+    estimated_completion = None
+    if last_duration:
+        base = refresh_started_at if refresh_started_at else next_refresh
+        if base:
+            estimated_completion = base + timedelta(seconds=last_duration)
+
     context = {
         'data': cache.data if cache else None,
         'last_updated': cache.created_at if cache else None,
+        'last_duration': last_duration,
         'cache_warming': cache is None or _cache_needs_refresh(cache),
+        'refresh_started_at': refresh_started_at,
+        'next_refresh': next_refresh,
+        'estimated_completion': estimated_completion,
     }
     return render(request, 'dashboard/inspection.html', context)
 

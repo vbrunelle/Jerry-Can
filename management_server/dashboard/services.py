@@ -366,13 +366,35 @@ def cleanup_expired_downloads():
         dr.save(update_fields=['status'])
 
 
+_REFRESH_RUNNING_FILE = '/tmp/refresh_cache_running'
+
+
 def refresh_inspection_cache():
     """Fetch inspection data and save to InspectionCache."""
+    import time
     from dashboard.models import InspectionCache
 
-    data = get_inspection_data()
-    InspectionCache.objects.create(data=data)
-    # Keep only the latest cache entry
-    latest = InspectionCache.objects.order_by('-created_at').first()
-    if latest:
-        InspectionCache.objects.exclude(pk=latest.pk).delete()
+    # Write start timestamp so the view can detect an in-progress refresh
+    started_at = time.time()
+    try:
+        with open(_REFRESH_RUNNING_FILE, 'w') as f:
+            f.write(str(started_at))
+    except OSError:
+        pass
+
+    try:
+        t0 = time.time()
+        data = get_inspection_data()
+        duration = round(time.time() - t0, 1)
+
+        InspectionCache.objects.create(data=data, duration_seconds=duration)
+        # Keep only the latest cache entry
+        latest = InspectionCache.objects.order_by('-created_at').first()
+        if latest:
+            InspectionCache.objects.exclude(pk=latest.pk).delete()
+    finally:
+        try:
+            import os as _os
+            _os.remove(_REFRESH_RUNNING_FILE)
+        except OSError:
+            pass

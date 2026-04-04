@@ -3,10 +3,11 @@ from django.db import models
 
 
 class InspectionCache(models.Model):
-    """Stores cached inspection data, refreshed every 15 minutes."""
+    """Stores cached inspection data, refreshed periodically."""
 
     data = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']

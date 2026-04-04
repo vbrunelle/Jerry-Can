@@ -6,8 +6,22 @@
         <div class="col-auto">
             <h2 class="page-title">Inspection des données</h2>
             {% if last_updated %}
-            <div class="text-secondary mt-1">Dernière mise à jour : {{ last_updated }}</div>
+            <div class="text-secondary mt-1">
+                Dernière mise à jour : {{ last_updated|date:"Y-m-d H:i:s" }}
+                {% if last_duration %}<span class="ms-1 text-muted">({{ last_duration }}s)</span>{% endif %}
+            </div>
             {% endif %}
+            <div class="text-secondary mt-1" style="font-size:0.85em;">
+                {% if refresh_started_at %}
+                    <span class="badge bg-warning text-dark me-1">⟳ En cours</span>
+                    Débutée à {{ refresh_started_at|date:"H:i:s" }}
+                    {% if estimated_completion %}
+                        — complétion estimée : {{ estimated_completion|date:"H:i:s" }}
+                    {% endif %}
+                {% elif next_refresh %}
+                    Prochaine mise à jour : {{ next_refresh|date:"H:i:s" }}{% if estimated_completion %} — complétion estimée : {{ estimated_completion|date:"H:i:s" }}{% endif %}
+                {% endif %}
+            </div>
         </div>
     </div>
 </div>
@@ -17,7 +31,7 @@
     <div class="card-body">
         <div class="d-flex align-items-center gap-2">
             <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
-            <span class="text-secondary">Cache en cours de chargement. Réessayez dans une minute (rafraîchissement automatique toutes les minutes).</span>
+            <span class="text-secondary">Cache en cours de chargement. Réessayez dans quelques minutes (rafraîchissement automatique toutes les 5 minutes).</span>
         </div>
     </div>
 </div>
