@@ -148,58 +148,27 @@ def get_inspection_data():
             ]
 
         # --- Snapshots (last 10) ---
-        snap_rows = conn.execute(
-            """
-            SELECT fetched_at, COUNT(*) as record_count
-            FROM prices
-            GROUP BY fetched_at
-            ORDER BY fetched_at DESC
-            LIMIT 11
-            """
-        ).fetchall()
-        snapshots = []
-        for i, row in enumerate(snap_rows[:10]):
-            changes = None
-            if i + 1 < len(snap_rows):
-                cur_ts = row['fetched_at']
-                prev_ts = snap_rows[i + 1]['fetched_at']
-                change_row = conn.execute(
-                    """
-                    SELECT
-                        SUM(CASE WHEN prev_price IS NULL THEN 1 ELSE 0 END) AS inserts,
-                        SUM(CASE WHEN prev_price IS NOT NULL AND cur_price != prev_price THEN 1 ELSE 0 END) AS updates
-                    FROM (
-                        SELECT c.station_id, c.fuel_type,
-                               c.price AS cur_price, p.price AS prev_price
-                        FROM prices c
-                        LEFT JOIN prices p
-                            ON p.fetched_at = ? AND p.station_id = c.station_id
-                           AND p.fuel_type = c.fuel_type
-                        WHERE c.fetched_at = ?
-                    )
-                    """,
-                    (prev_ts, cur_ts),
-                ).fetchone()
-                deletions = conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM prices p
-                    WHERE p.fetched_at = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM prices c
-                          WHERE c.fetched_at = ?
-                            AND c.station_id = p.station_id
-                            AND c.fuel_type  = p.fuel_type
-                      )
-                    """,
-                    (prev_ts, cur_ts),
-                ).fetchone()[0]
-                changes = (change_row['inserts'] or 0) + (change_row['updates'] or 0) + deletions
-            snapshots.append({
-                'fetched_at': row['fetched_at'],
-                'record_count': row['record_count'],
-                'changes': changes,
-            })
+        try:
+            from price_history import get_snapshots_data
+            snapshots = get_snapshots_data(HUDI_TABLE_PATH)
+        except Exception:
+            snapshots = []
+
+        if not snapshots:
+            # Fallback: SQLite only (no Hudi data yet)
+            snap_rows = conn.execute(
+                """
+                SELECT fetched_at, COUNT(*) as record_count
+                FROM prices
+                GROUP BY fetched_at
+                ORDER BY fetched_at DESC
+                LIMIT 10
+                """
+            ).fetchall()
+            snapshots = [
+                {'fetched_at': r['fetched_at'], 'record_count': r['record_count'], 'changes': None}
+                for r in snap_rows
+            ]
 
         # --- Price variations ---
         _CTE = """

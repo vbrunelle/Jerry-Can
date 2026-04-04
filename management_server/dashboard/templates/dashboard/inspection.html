@@ -80,7 +80,7 @@
             </thead>
             <tbody>
                 {% for s in data.snapshots %}
-                <tr><td>{{ s.fetched_at }}</td><td>{{ s.record_count }}</td><td>{{ s.changes|default:"—" }}</td></tr>
+                <tr><td>{{ s.fetched_at }}</td><td>{{ s.record_count }}</td><td>{{ s.changes|default_if_none:"—" }}</td></tr>
                 {% endfor %}
             </tbody>
         </table>

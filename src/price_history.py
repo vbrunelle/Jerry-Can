@@ -191,3 +191,38 @@ def get_latest_changes_summary(
         "drops": drops,
         "latest_changed_count": latest_count,
     }
+
+
+def get_snapshots_data(table_path: str, limit: int = 10) -> list[dict]:
+    """Return snapshot rows as a list of dicts (same data as show_snapshots()).
+
+    Each dict has: fetched_at (str), record_count (int|None), changes (int|None).
+    Sorted by fetched_at descending.
+    """
+    hist = build_historicized_changes_pandas(table_path)
+    if hist.empty:
+        return []
+
+    all_df = _read_all_parquet(table_path)
+    record_counts: dict = {}
+    if not all_df.empty:
+        record_counts = all_df.groupby("fetched_at").size().to_dict()
+
+    changes_per_snap = hist.groupby("fetched_at").size()
+
+    all_ts = sorted(
+        set(record_counts.keys()) | set(changes_per_snap.index),
+        reverse=True,
+    )[:limit]
+
+    result = []
+    for ts in all_ts:
+        key = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        rec = record_counts.get(ts)
+        chg = int(changes_per_snap[ts]) if ts in changes_per_snap.index else None
+        result.append({
+            "fetched_at": key,
+            "record_count": int(rec) if rec is not None else None,
+            "changes": chg,
+        })
+    return result

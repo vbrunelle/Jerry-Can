@@ -25,6 +25,7 @@ services:
       DJANGO_SETTINGS_MODULE: jerrycan_web.settings
       DJANGO_DB_PATH: /data/django_db.sqlite3
       DATABASE_PATH: /data/fuel_prices.db
+      HUDI_TABLE_PATH: /data/hudi/fuel_prices
       PERSISTENCE_BACKEND: ${PERSISTENCE_BACKEND:-sqlite}
     volumes:
       - type: bind

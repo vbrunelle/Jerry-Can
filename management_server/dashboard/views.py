@@ -16,9 +16,30 @@ def home(request):
     return render(request, 'dashboard/home.html')
 
 
+def _cache_needs_refresh(cache):
+    """Return True if the cache is missing, stale, or lacks the 'changes' key."""
+    if cache is None:
+        return True
+    # Stale: cached when DB was empty
+    if cache.data.get('summary', {}).get('price_count', 0) == 0:
+        return True
+    # Missing 'changes' key (cache created before feature was added)
+    snapshots = cache.data.get('snapshots', [])
+    if snapshots and 'changes' not in snapshots[0]:
+        return True
+    return False
+
+
 @login_required
 def inspection(request):
+    from dashboard.services import refresh_inspection_cache
     cache = InspectionCache.objects.first()
+    if _cache_needs_refresh(cache):
+        try:
+            refresh_inspection_cache()
+            cache = InspectionCache.objects.first()
+        except Exception:
+            pass
     context = {
         'data': cache.data if cache else None,
         'last_updated': cache.created_at if cache else None,

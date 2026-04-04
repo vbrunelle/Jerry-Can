@@ -207,44 +207,16 @@ class PandasHudiInspector(Inspector):
         _print_rows("Baisses", summary["drops"])
 
     def show_snapshots(self) -> None:
-        df = self._load()
-        if df is None:
-            return
+        from src.price_history import get_snapshots_data
 
-        snap_groups = (
-            df.groupby("fetched_at")
-            .size()
-            .reset_index(name="cnt")
-            .sort_values("fetched_at", ascending=False)
-            .head(11)
-        )
-        timestamps = snap_groups["fetched_at"].tolist()
-
-        if not timestamps:
+        rows = get_snapshots_data(self._table_path)
+        if not rows:
             print("\nNo snapshots yet.")
             return
 
-        results = []
-        for i, ts in enumerate(timestamps[:10]):
-            cnt = int(snap_groups[snap_groups["fetched_at"] == ts]["cnt"].iloc[0])
-            changes = None
-            if i + 1 < len(timestamps):
-                prev_ts = timestamps[i + 1]
-                cur = df[df["fetched_at"] == ts][["station_id", "fuel_type", "price"]]
-                prev = df[df["fetched_at"] == prev_ts][["station_id", "fuel_type", "price"]]
-                merged = cur.merge(
-                    prev, on=["station_id", "fuel_type"], how="outer",
-                    suffixes=("_cur", "_prev"),
-                )
-                inserts = int(merged["price_prev"].isna().sum())
-                deletions = int(merged["price_cur"].isna().sum())
-                both = merged.dropna(subset=["price_cur", "price_prev"])
-                price_changes = int((both["price_cur"] != both["price_prev"]).sum())
-                changes = inserts + price_changes + deletions
-            results.append((ts, cnt, changes))
-
         print(f"\n{'Snapshot':<30} {'Records':>8} {'Changements':>12}")
         print("-" * 52)
-        for ts, cnt, changes in results:
-            changes_str = str(changes) if changes is not None else "—"
-            print(f"{str(ts):<30} {cnt:>8} {changes_str:>12}")
+        for r in rows:
+            rec_str = str(r["record_count"]) if r["record_count"] is not None else "—"
+            chg = r["changes"] if r["changes"] is not None else 0
+            print(f"{r['fetched_at']:<30} {rec_str:>8} {chg:>12}")
