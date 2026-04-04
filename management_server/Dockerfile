@@ -10,6 +10,9 @@ COPY jerrycan_web/ jerrycan_web/
 COPY accounts/ accounts/
 COPY dashboard/ dashboard/
 
+# price_history module for Hudi-based CSV exports
+COPY price_history.py ./
+
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 

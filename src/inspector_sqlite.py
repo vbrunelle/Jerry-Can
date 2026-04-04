@@ -171,7 +171,7 @@ class SqliteInspector(Inspector):
                 FROM prices
                 GROUP BY fetched_at
                 ORDER BY fetched_at DESC
-                LIMIT 10
+                LIMIT 11
                 """
             ).fetchall()
 
@@ -179,10 +179,51 @@ class SqliteInspector(Inspector):
                 print("\nNo snapshots yet.")
                 return
 
-            print(f"\n{'Snapshot':<30} {'Records':>8}")
-            print("-" * 40)
-            for r in rows:
-                print(f"{r['fetched_at']:<30} {r['cnt']:>8}")
+            snapshots = []
+            for i, r in enumerate(rows[:10]):
+                changes = None
+                if i + 1 < len(rows):
+                    cur_ts = r['fetched_at']
+                    prev_ts = rows[i + 1]['fetched_at']
+                    change_row = conn.execute(
+                        """
+                        SELECT
+                            SUM(CASE WHEN prev_price IS NULL THEN 1 ELSE 0 END) AS inserts,
+                            SUM(CASE WHEN prev_price IS NOT NULL AND cur_price != prev_price THEN 1 ELSE 0 END) AS updates
+                        FROM (
+                            SELECT c.station_id, c.fuel_type,
+                                   c.price AS cur_price, p.price AS prev_price
+                            FROM prices c
+                            LEFT JOIN prices p
+                                ON p.fetched_at = ? AND p.station_id = c.station_id
+                               AND p.fuel_type = c.fuel_type
+                            WHERE c.fetched_at = ?
+                        )
+                        """,
+                        (prev_ts, cur_ts),
+                    ).fetchone()
+                    deletions = conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM prices p
+                        WHERE p.fetched_at = ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM prices c
+                              WHERE c.fetched_at = ?
+                                AND c.station_id = p.station_id
+                                AND c.fuel_type  = p.fuel_type
+                          )
+                        """,
+                        (prev_ts, cur_ts),
+                    ).fetchone()[0]
+                    changes = (change_row['inserts'] or 0) + (change_row['updates'] or 0) + deletions
+                snapshots.append((r['fetched_at'], r['cnt'], changes))
+
+            print(f"\n{'Snapshot':<30} {'Records':>8} {'Changements':>12}")
+            print("-" * 52)
+            for ts, cnt, changes in snapshots:
+                changes_str = str(changes) if changes is not None else "—"
+                print(f"{ts:<30} {cnt:>8} {changes_str:>12}")
 
     def show_price_variations(self, limit: int = 10) -> None:
         self._check_exists()

@@ -9,10 +9,7 @@ For a dataset of ~6 500 rows this cuts inspection time from ~13 s (Spark)
 to < 1 s (pandas).
 """
 
-import json
 import os
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -210,40 +207,44 @@ class PandasHudiInspector(Inspector):
         _print_rows("Baisses", summary["drops"])
 
     def show_snapshots(self) -> None:
-        hoodie_dir = os.path.join(self._table_path, ".hoodie")
-        if not os.path.isdir(hoodie_dir):
-            print("\nNo commits yet.")
+        df = self._load()
+        if df is None:
             return
 
-        commits = []
-        for fname in sorted(os.listdir(hoodie_dir), reverse=True):
-            if fname.endswith(".commit"):
-                instant = fname[:-7]
-            elif fname.endswith(".deltacommit"):
-                instant = fname[:-12]
-            else:
-                continue
-            try:
-                ts = datetime.strptime(instant[:17].ljust(17, "0"), "%Y%m%d%H%M%S%f")
-                ts = ts.replace(tzinfo=timezone.utc)
-            except ValueError:
-                ts = None
-            try:
-                with open(os.path.join(hoodie_dir, fname)) as fh:
-                    data = json.load(fh)
-                stats = data.get("partitionToWriteStats", {})
-                inserts = sum(s.get("numInserts", 0) for p in stats.values() for s in p)
-                updates = sum(s.get("numUpdateWrites", 0) for p in stats.values() for s in p)
-            except Exception:
-                inserts = updates = 0
-            commits.append((instant, ts, inserts, updates))
+        snap_groups = (
+            df.groupby("fetched_at")
+            .size()
+            .reset_index(name="cnt")
+            .sort_values("fetched_at", ascending=False)
+            .head(11)
+        )
+        timestamps = snap_groups["fetched_at"].tolist()
 
-        if not commits:
-            print("\nNo commits yet.")
+        if not timestamps:
+            print("\nNo snapshots yet.")
             return
 
-        print(f"\n{'Commit instant':<22} {'Timestamp (UTC)':<22} {'Inserts':>8} {'Updates':>8}")
-        print("-" * 64)
-        for instant, ts, ins, upd in commits[:10]:
-            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "?"
-            print(f"{instant:<22} {ts_str:<22} {ins:>8} {upd:>8}")
+        results = []
+        for i, ts in enumerate(timestamps[:10]):
+            cnt = int(snap_groups[snap_groups["fetched_at"] == ts]["cnt"].iloc[0])
+            changes = None
+            if i + 1 < len(timestamps):
+                prev_ts = timestamps[i + 1]
+                cur = df[df["fetched_at"] == ts][["station_id", "fuel_type", "price"]]
+                prev = df[df["fetched_at"] == prev_ts][["station_id", "fuel_type", "price"]]
+                merged = cur.merge(
+                    prev, on=["station_id", "fuel_type"], how="outer",
+                    suffixes=("_cur", "_prev"),
+                )
+                inserts = int(merged["price_prev"].isna().sum())
+                deletions = int(merged["price_cur"].isna().sum())
+                both = merged.dropna(subset=["price_cur", "price_prev"])
+                price_changes = int((both["price_cur"] != both["price_prev"]).sum())
+                changes = inserts + price_changes + deletions
+            results.append((ts, cnt, changes))
+
+        print(f"\n{'Snapshot':<30} {'Records':>8} {'Changements':>12}")
+        print("-" * 52)
+        for ts, cnt, changes in results:
+            changes_str = str(changes) if changes is not None else "—"
+            print(f"{str(ts):<30} {cnt:>8} {changes_str:>12}")

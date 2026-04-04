@@ -1,6 +1,7 @@
 """Services for data inspection and CSV generation."""
 
 import csv
+import logging
 import os
 import sqlite3
 import uuid
@@ -10,7 +11,10 @@ from django.utils import timezone
 
 
 DATABASE_PATH = os.getenv('DATABASE_PATH', '/data/fuel_prices.db')
+HUDI_TABLE_PATH = os.getenv('HUDI_TABLE_PATH', '/data/hudi/fuel_prices')
 PERSISTENCE_BACKEND = os.getenv('PERSISTENCE_BACKEND', 'sqlite')
+
+logger = logging.getLogger(__name__)
 
 
 def _connect(db_path):
@@ -150,13 +154,52 @@ def get_inspection_data():
             FROM prices
             GROUP BY fetched_at
             ORDER BY fetched_at DESC
-            LIMIT 10
+            LIMIT 11
             """
         ).fetchall()
-        snapshots = [
-            {'fetched_at': row['fetched_at'], 'record_count': row['record_count']}
-            for row in snap_rows
-        ]
+        snapshots = []
+        for i, row in enumerate(snap_rows[:10]):
+            changes = None
+            if i + 1 < len(snap_rows):
+                cur_ts = row['fetched_at']
+                prev_ts = snap_rows[i + 1]['fetched_at']
+                change_row = conn.execute(
+                    """
+                    SELECT
+                        SUM(CASE WHEN prev_price IS NULL THEN 1 ELSE 0 END) AS inserts,
+                        SUM(CASE WHEN prev_price IS NOT NULL AND cur_price != prev_price THEN 1 ELSE 0 END) AS updates
+                    FROM (
+                        SELECT c.station_id, c.fuel_type,
+                               c.price AS cur_price, p.price AS prev_price
+                        FROM prices c
+                        LEFT JOIN prices p
+                            ON p.fetched_at = ? AND p.station_id = c.station_id
+                           AND p.fuel_type = c.fuel_type
+                        WHERE c.fetched_at = ?
+                    )
+                    """,
+                    (prev_ts, cur_ts),
+                ).fetchone()
+                deletions = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM prices p
+                    WHERE p.fetched_at = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM prices c
+                          WHERE c.fetched_at = ?
+                            AND c.station_id = p.station_id
+                            AND c.fuel_type  = p.fuel_type
+                      )
+                    """,
+                    (prev_ts, cur_ts),
+                ).fetchone()[0]
+                changes = (change_row['inserts'] or 0) + (change_row['updates'] or 0) + deletions
+            snapshots.append({
+                'fetched_at': row['fetched_at'],
+                'record_count': row['record_count'],
+                'changes': changes,
+            })
 
         # --- Price variations ---
         _CTE = """
@@ -248,7 +291,11 @@ def get_inspection_data():
 
 
 def generate_csv_for_user(download_request_id):
-    """Generate a CSV file for the given DownloadRequest."""
+    """Generate a CSV file with the full historicized price-change data.
+
+    Uses the Hudi parquet files directly (via price_history) when the
+    table exists, falling back to a plain SQLite dump otherwise.
+    """
     from dashboard.models import DownloadRequest
 
     try:
@@ -260,43 +307,15 @@ def generate_csv_for_user(download_request_id):
     dr.save(update_fields=['status'])
 
     try:
-        db_path = DATABASE_PATH
-        if not os.path.exists(db_path):
-            raise FileNotFoundError(f"Database not found: {db_path}")
-
-        conn = _connect(db_path)
-        try:
-            rows = conn.execute(
-                """
-                SELECT s.name AS station_name, s.address, s.city, s.region,
-                       s.latitude, s.longitude,
-                       p.fuel_type, p.price, p.fetched_at
-                FROM prices p
-                JOIN stations s ON s.id = p.station_id
-                ORDER BY p.fetched_at DESC, s.region, s.name, p.fuel_type
-                """
-            ).fetchall()
-        finally:
-            conn.close()
-
         download_dir = f"/data/downloads/{dr.user_id}"
         os.makedirs(download_dir, exist_ok=True)
-
         filename = f"{uuid.uuid4()}.csv"
         file_path = os.path.join(download_dir, filename)
 
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'station_name', 'address', 'city', 'region',
-                'latitude', 'longitude', 'fuel_type', 'price', 'fetched_at',
-            ])
-            for row in rows:
-                writer.writerow([
-                    row['station_name'], row['address'], row['city'],
-                    row['region'], row['latitude'], row['longitude'],
-                    row['fuel_type'], row['price'], row['fetched_at'],
-                ])
+        if os.path.isdir(HUDI_TABLE_PATH):
+            _generate_csv_from_hudi(file_path)
+        else:
+            _generate_csv_from_sqlite(file_path)
 
         dr.status = 'ready'
         dr.file_path = file_path
@@ -304,9 +323,59 @@ def generate_csv_for_user(download_request_id):
         dr.save(update_fields=['status', 'file_path', 'completed_at'])
 
     except Exception as exc:
+        logger.exception("CSV generation failed for request %s", download_request_id)
         dr.status = 'error'
         dr.error_message = str(exc)
         dr.save(update_fields=['status', 'error_message'])
+
+
+def _generate_csv_from_hudi(file_path):
+    """Export the full historicized price-change history from Hudi parquet."""
+    from price_history import build_historicized_changes_pandas
+
+    df = build_historicized_changes_pandas(HUDI_TABLE_PATH)
+    if df.empty:
+        raise ValueError("No price data found in Hudi table.")
+
+    df = df.sort_values(
+        ["region", "city", "station_name", "fuel_type", "fetched_at"],
+    ).reset_index(drop=True)
+    df.to_csv(file_path, index=False)
+
+
+def _generate_csv_from_sqlite(file_path):
+    """Fallback: export raw price data from the SQLite mirror."""
+    db_path = DATABASE_PATH
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.name AS station_name, s.address, s.city, s.region,
+                   s.latitude, s.longitude,
+                   p.fuel_type, p.price, p.fetched_at
+            FROM prices p
+            JOIN stations s ON s.id = p.station_id
+            ORDER BY p.fetched_at DESC, s.region, s.name, p.fuel_type
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    with open(file_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'station_name', 'address', 'city', 'region',
+            'latitude', 'longitude', 'fuel_type', 'price', 'fetched_at',
+        ])
+        for row in rows:
+            writer.writerow([
+                row['station_name'], row['address'], row['city'],
+                row['region'], row['latitude'], row['longitude'],
+                row['fuel_type'], row['price'], row['fetched_at'],
+            ])
 
 
 def cleanup_expired_downloads():
