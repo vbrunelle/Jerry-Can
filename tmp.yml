@@ -16,15 +16,13 @@ services:
       # Hudi is the default backend. Uncomment below to fall back to SQLite:
       # PERSISTENCE_BACKEND: sqlite
     volumes:
-      - type: bind
-        source: ${DATA_DIR:-./data}
-        target: /data
+      - /srv/dev-disk-by-uuid-8ded71ac-34ba-418b-8ade-afdf34bfbd1d/jerrycan/data:/data
     restart: unless-stopped
     networks:
       - internal
 
   django:
-    image: ghcr.io/vbrunelle/jerry-can-management:main
+    image: ghcr.io/vbrunelle/jerry-can-management:latest
     env_file:
       - path: .env
         required: false
@@ -46,10 +44,11 @@ services:
       - internal
 
   nginx:
-    build: ./nginx
+    image: nginx:1.27-alpine
     ports:
       - "${NGINX_PORT:-80}:80"
     volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - django-static:/app/staticfiles:ro
     restart: unless-stopped
     depends_on:
