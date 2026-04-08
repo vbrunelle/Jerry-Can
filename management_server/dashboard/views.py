@@ -9,8 +9,9 @@ from django.http import FileResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from dashboard.models import DownloadRequest, InspectionCache
-from dashboard.services import generate_csv_for_user, _REFRESH_RUNNING_FILE
+from dashboard.forms import SiteConfigurationForm
+from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
+from dashboard.services import generate_csv_for_user, refresh_inspection_cache, _REFRESH_RUNNING_FILE
 
 
 @login_required
@@ -33,8 +34,26 @@ def _cache_needs_refresh(cache):
 
 
 def _get_inspection_interval():
-    """Return the configured inspection refresh interval in minutes."""
+    """Return the configured inspection refresh interval in minutes.
+
+    The database value (set by an admin) takes precedence over the
+    environment variable, which itself falls back to the default of 5.
+    """
+    try:
+        config = SiteConfiguration.load()
+        if config.inspection_interval_minutes is not None:
+            return config.inspection_interval_minutes
+    except Exception:
+        pass
     return int(os.environ.get("INSPECTION_REFRESH_INTERVAL_MINUTES", "5"))
+
+
+def _is_manual_inspection_enabled():
+    """Return True if manual inspection mode is enabled in the DB."""
+    try:
+        return SiteConfiguration.load().manual_inspection_enabled
+    except Exception:
+        return False
 
 
 def _next_cron_run():
@@ -63,7 +82,11 @@ def inspection(request):
         pass
 
     last_duration = cache.duration_seconds if cache else None
-    next_refresh = None if refresh_started_at else _next_cron_run()
+    manual_mode = _is_manual_inspection_enabled()
+
+    next_refresh = None
+    if not refresh_started_at and not manual_mode:
+        next_refresh = _next_cron_run()
 
     # Estimated completion:
     # - if running:   start_time + last_duration
@@ -83,6 +106,7 @@ def inspection(request):
         'next_refresh': next_refresh,
         'estimated_completion': estimated_completion,
         'inspection_interval': _get_inspection_interval(),
+        'manual_mode': manual_mode,
     }
     return render(request, 'dashboard/inspection.html', context)
 
@@ -135,3 +159,47 @@ def download_file(request, request_id):
         as_attachment=True,
         filename='fuel_prices.csv',
     )
+
+
+@login_required
+def settings_view(request):
+    """Allow admin users to configure inspection settings."""
+    if request.user.role != 'admin':
+        return redirect('home')
+
+    config = SiteConfiguration.load()
+    env_interval = int(os.environ.get("INSPECTION_REFRESH_INTERVAL_MINUTES", "5"))
+
+    if request.method == 'POST':
+        form = SiteConfigurationForm(request.POST, instance=config)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Paramètres enregistrés avec succès.")
+            return redirect('settings')
+    else:
+        form = SiteConfigurationForm(instance=config)
+
+    return render(request, 'dashboard/settings.html', {
+        'form': form,
+        'config': config,
+        'env_interval': env_interval,
+    })
+
+
+@login_required
+def trigger_inspection(request):
+    """Manually trigger an inspection cache refresh (admin only)."""
+    if request.method != 'POST':
+        return redirect('inspection')
+
+    if request.user.role != 'admin':
+        return redirect('home')
+
+    thread = threading.Thread(
+        target=refresh_inspection_cache,
+        daemon=True,
+    )
+    thread.start()
+    messages.success(request, "Inspection manuelle déclenchée.")
+    return redirect('inspection')
+

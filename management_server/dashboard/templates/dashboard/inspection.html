@@ -18,10 +18,23 @@
                     {% if estimated_completion %}
                         — complétion estimée : {{ estimated_completion|date:"H:i:s" }}
                     {% endif %}
+                {% elif manual_mode %}
+                    <span class="badge bg-yellow-lt me-1">Mode manuel</span>
+                    Les inspections automatiques sont désactivées.
                 {% elif next_refresh %}
                     Prochaine mise à jour : {{ next_refresh|date:"H:i:s" }}{% if estimated_completion %} — complétion estimée : {{ estimated_completion|date:"H:i:s" }}{% endif %}
                 {% endif %}
             </div>
+            {% if request.user.role == 'admin' %}
+            <div class="mt-2">
+                <form method="post" action="{% url 'trigger_inspection' %}" style="display:inline;">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-primary" {% if refresh_started_at %}disabled{% endif %}>
+                        ⟳ Déclencher une inspection
+                    </button>
+                </form>
+            </div>
+            {% endif %}
         </div>
     </div>
 </div>

@@ -1,6 +1,11 @@
 from django.contrib import admin
 
-from dashboard.models import DownloadRequest, InspectionCache
+from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
+
+
+@admin.register(SiteConfiguration)
+class SiteConfigurationAdmin(admin.ModelAdmin):
+    list_display = ('inspection_interval_minutes', 'manual_inspection_enabled', 'updated_at')
 
 
 @admin.register(InspectionCache)
