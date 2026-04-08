@@ -1,0 +1,92 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Paramètres{% endblock %}
+{% block content %}
+<div class="page-header d-print-none">
+    <div class="row align-items-center">
+        <div class="col-auto">
+            <h2 class="page-title">Paramètres d'inspection</h2>
+            <div class="text-secondary mt-1">
+                Ces paramètres remplacent les valeurs par défaut du fichier .env sans les effacer.
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header"><h3 class="card-title">Configuration</h3></div>
+    <div class="card-body">
+        <form method="post" action="{% url 'settings' %}">
+            {% csrf_token %}
+            <div class="mb-3">
+                <label class="form-label" for="id_inspection_interval_minutes">
+                    {{ form.inspection_interval_minutes.label }}
+                </label>
+                {{ form.inspection_interval_minutes }}
+                <small class="form-hint">
+                    Valeur par défaut (.env) : {{ env_interval }} minute{{ env_interval|pluralize:"s" }}.
+                    {% if config.inspection_interval_minutes %}
+                    Valeur actuelle : {{ config.inspection_interval_minutes }} minute{{ config.inspection_interval_minutes|pluralize:"s" }}.
+                    {% else %}
+                    Aucune valeur personnalisée — la valeur par défaut est utilisée.
+                    {% endif %}
+                </small>
+                {% if form.inspection_interval_minutes.errors %}
+                <div class="invalid-feedback d-block">
+                    {% for error in form.inspection_interval_minutes.errors %}{{ error }}{% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            <div class="mb-3">
+                <label class="form-check form-switch">
+                    {{ form.manual_inspection_enabled }}
+                    <span class="form-check-label">{{ form.manual_inspection_enabled.label }}</span>
+                </label>
+                <small class="form-hint">
+                    Lorsque activé, les inspections automatiques (cron) sont désactivées.
+                    Vous devrez déclencher les inspections manuellement depuis la page d'inspection.
+                </small>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary">Enregistrer</button>
+                <a href="{% url 'home' %}" class="btn btn-outline-secondary ms-2">Annuler</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header"><h3 class="card-title">État actuel</h3></div>
+    <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+            <tbody>
+                <tr>
+                    <th>Intervalle effectif</th>
+                    <td>
+                        {% if config.inspection_interval_minutes %}
+                            {{ config.inspection_interval_minutes }} minute{{ config.inspection_interval_minutes|pluralize:"s" }}
+                            <span class="badge bg-blue-lt ms-1">Personnalisé</span>
+                        {% else %}
+                            {{ env_interval }} minute{{ env_interval|pluralize:"s" }}
+                            <span class="badge bg-secondary-lt ms-1">Par défaut (.env)</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Mode d'inspection</th>
+                    <td>
+                        {% if config.manual_inspection_enabled %}
+                            <span class="badge bg-yellow-lt">Manuel</span>
+                        {% else %}
+                            <span class="badge bg-green-lt">Automatique</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Dernière modification</th>
+                    <td>{{ config.updated_at|date:"Y-m-d H:i:s"|default:"—" }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

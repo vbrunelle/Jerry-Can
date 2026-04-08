@@ -4,15 +4,17 @@ import shutil
 import sqlite3
 import tempfile
 from datetime import timedelta
+from io import StringIO
 from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from dashboard.models import DownloadRequest, InspectionCache
+from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
     cleanup_expired_downloads,
     generate_csv_for_user,
@@ -487,3 +489,273 @@ class DownloadFileViewTests(TestCase):
         url = reverse("download_file", args=[dr.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Model tests — SiteConfiguration
+# ---------------------------------------------------------------------------
+class SiteConfigurationModelTests(TestCase):
+    """Tests for the SiteConfiguration singleton model."""
+
+    def test_load_creates_default_instance(self):
+        self.assertEqual(SiteConfiguration.objects.count(), 0)
+        config = SiteConfiguration.load()
+        self.assertEqual(SiteConfiguration.objects.count(), 1)
+        self.assertIsNone(config.inspection_interval_minutes)
+        self.assertFalse(config.manual_inspection_enabled)
+
+    def test_load_returns_existing_instance(self):
+        SiteConfiguration.objects.create(
+            pk=1, inspection_interval_minutes=10, manual_inspection_enabled=True
+        )
+        config = SiteConfiguration.load()
+        self.assertEqual(config.inspection_interval_minutes, 10)
+        self.assertTrue(config.manual_inspection_enabled)
+
+    def test_save_enforces_singleton(self):
+        config1 = SiteConfiguration(inspection_interval_minutes=10)
+        config1.save()
+        config2 = SiteConfiguration(inspection_interval_minutes=20)
+        config2.save()
+        self.assertEqual(SiteConfiguration.objects.count(), 1)
+        config = SiteConfiguration.objects.first()
+        self.assertEqual(config.inspection_interval_minutes, 20)
+
+    def test_str(self):
+        config = SiteConfiguration.load()
+        self.assertEqual(str(config), "SiteConfiguration")
+
+
+# ---------------------------------------------------------------------------
+# View tests — settings_view
+# ---------------------------------------------------------------------------
+class SettingsViewTests(TestCase):
+    """Tests for the settings_view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="admin",
+            password="adminpass123",
+            role="admin",
+            must_change_password=False,
+        )
+        self.normal = User.objects.create_user(
+            username="client",
+            password="clientpass123",
+            role="client",
+            must_change_password=False,
+        )
+        self.url = reverse("settings")
+
+    def test_requires_login(self):
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_non_admin_redirected_to_home(self):
+        self.client.login(username="client", password="clientpass123")
+        response = self.client.get(self.url)
+        self.assertRedirects(response, reverse("home"))
+
+    def test_admin_can_view_settings(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("form", response.context)
+        self.assertIn("config", response.context)
+        self.assertIn("env_interval", response.context)
+
+    def test_admin_can_save_interval(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url, {
+            "inspection_interval_minutes": "15",
+            "manual_inspection_enabled": "",
+        })
+        self.assertRedirects(response, reverse("settings"))
+        config = SiteConfiguration.load()
+        self.assertEqual(config.inspection_interval_minutes, 15)
+        self.assertFalse(config.manual_inspection_enabled)
+
+    def test_admin_can_enable_manual_mode(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url, {
+            "inspection_interval_minutes": "",
+            "manual_inspection_enabled": "on",
+        })
+        self.assertRedirects(response, reverse("settings"))
+        config = SiteConfiguration.load()
+        self.assertTrue(config.manual_inspection_enabled)
+
+    def test_admin_can_clear_interval(self):
+        SiteConfiguration.objects.create(
+            pk=1, inspection_interval_minutes=15
+        )
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url, {
+            "inspection_interval_minutes": "",
+            "manual_inspection_enabled": "",
+        })
+        self.assertRedirects(response, reverse("settings"))
+        config = SiteConfiguration.load()
+        self.assertIsNone(config.inspection_interval_minutes)
+
+    def test_invalid_interval_shows_error(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url, {
+            "inspection_interval_minutes": "0",
+            "manual_inspection_enabled": "",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors)
+
+
+# ---------------------------------------------------------------------------
+# View tests — trigger_inspection
+# ---------------------------------------------------------------------------
+class TriggerInspectionViewTests(TestCase):
+    """Tests for the trigger_inspection view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="admin",
+            password="adminpass123",
+            role="admin",
+            must_change_password=False,
+        )
+        self.normal = User.objects.create_user(
+            username="client",
+            password="clientpass123",
+            role="client",
+            must_change_password=False,
+        )
+        self.url = reverse("trigger_inspection")
+
+    def test_requires_login(self):
+        response = self.client.post(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_get_redirects_to_inspection(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.get(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+
+    def test_non_admin_redirected_to_home(self):
+        self.client.login(username="client", password="clientpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("home"))
+
+    @patch("dashboard.views.refresh_inspection_cache")
+    @patch("dashboard.views.threading.Thread")
+    def test_admin_can_trigger_inspection(self, mock_thread_cls, mock_refresh):
+        mock_thread_instance = mock_thread_cls.return_value
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+        mock_thread_instance.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Helper tests — _get_inspection_interval with DB override
+# ---------------------------------------------------------------------------
+class InspectionIntervalDBOverrideTests(TestCase):
+    """Tests for _get_inspection_interval with database overrides."""
+
+    def test_returns_env_default_when_no_db_setting(self):
+        from dashboard.views import _get_inspection_interval
+        self.assertEqual(_get_inspection_interval(), 5)
+
+    def test_returns_db_value_when_set(self):
+        from dashboard.views import _get_inspection_interval
+        SiteConfiguration.objects.create(pk=1, inspection_interval_minutes=20)
+        self.assertEqual(_get_inspection_interval(), 20)
+
+    def test_returns_env_when_db_value_is_none(self):
+        from dashboard.views import _get_inspection_interval
+        SiteConfiguration.objects.create(pk=1, inspection_interval_minutes=None)
+        self.assertEqual(_get_inspection_interval(), 5)
+
+    @patch.dict(os.environ, {"INSPECTION_REFRESH_INTERVAL_MINUTES": "30"})
+    def test_db_overrides_env(self):
+        from dashboard.views import _get_inspection_interval
+        SiteConfiguration.objects.create(pk=1, inspection_interval_minutes=10)
+        self.assertEqual(_get_inspection_interval(), 10)
+
+
+# ---------------------------------------------------------------------------
+# Helper tests — _is_manual_inspection_enabled
+# ---------------------------------------------------------------------------
+class ManualInspectionEnabledTests(TestCase):
+    """Tests for _is_manual_inspection_enabled."""
+
+    def test_returns_false_by_default(self):
+        from dashboard.views import _is_manual_inspection_enabled
+        self.assertFalse(_is_manual_inspection_enabled())
+
+    def test_returns_true_when_enabled(self):
+        from dashboard.views import _is_manual_inspection_enabled
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+        self.assertTrue(_is_manual_inspection_enabled())
+
+
+# ---------------------------------------------------------------------------
+# Management command tests — refresh_cache with manual mode
+# ---------------------------------------------------------------------------
+class RefreshCacheManualModeTests(TestCase):
+    """Tests for the refresh_cache command respecting manual mode."""
+
+    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    def test_skips_when_manual_mode_enabled(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+        initial_count = InspectionCache.objects.count()
+        out = StringIO()
+        call_command("refresh_cache", stdout=out)
+        self.assertEqual(InspectionCache.objects.count(), initial_count)
+        self.assertIn("Manual inspection mode is enabled", out.getvalue())
+
+    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    def test_runs_when_manual_mode_disabled(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=False)
+        call_command("refresh_cache")
+        self.assertEqual(InspectionCache.objects.count(), 1)
+
+    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    def test_force_overrides_manual_mode(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+        call_command("refresh_cache", force=True)
+        self.assertEqual(InspectionCache.objects.count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# View tests — inspection view with manual mode
+# ---------------------------------------------------------------------------
+class InspectionViewManualModeTests(TestCase):
+    """Tests for the inspection view with manual mode context."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username="testuser",
+            password="testpass123",
+            must_change_password=False,
+        )
+        self.url = reverse("inspection")
+
+    def test_manual_mode_in_context(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertTrue(response.context["manual_mode"])
+
+    def test_no_next_refresh_in_manual_mode(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertIsNone(response.context["next_refresh"])
+
+    def test_auto_mode_shows_next_refresh(self):
+        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=False)
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertFalse(response.context["manual_mode"])
+        self.assertIsNotNone(response.context["next_refresh"])
