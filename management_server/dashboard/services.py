@@ -191,8 +191,7 @@ def refresh_inspection_cache():
 def refresh_snapshots():
     """Re-read snapshot data from the Hudi table and update the inspection cache.
 
-    This is the endpoint required by the issue: it forces a refresh of the
-    snapshot list from the authoritative Hudi data, replacing any stale
-    cache entries.
+    Forces a refresh of the snapshot list from the authoritative Hudi
+    data, replacing any stale cache entries.
     """
     refresh_inspection_cache()

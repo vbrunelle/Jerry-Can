@@ -68,7 +68,7 @@ _SAMPLE_INSPECTION_DATA = {
         {"fetched_at": "2024-01-01 10:00:00", "record_count": 2, "changes": 2},
     ],
     "price_variations": {
-        "increases": [{"station_name": "Station A", "city": "Montréal", "fuel_type": "regular", "prev_price": 1.6, "price": 1.6, "delta": 0.0}],
+        "increases": [{"station_name": "Station A", "city": "Montréal", "fuel_type": "regular", "prev_price": 1.5, "price": 1.6, "delta": 0.1}],
         "decreases": [],
     },
 }
