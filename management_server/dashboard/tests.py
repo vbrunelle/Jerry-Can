@@ -18,7 +18,10 @@ from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
     cleanup_expired_downloads,
     generate_csv_for_user,
+    get_current_prices,
     get_inspection_data,
+    get_snapshot_dates,
+    get_snapshots_for_date,
     refresh_inspection_cache,
 )
 
@@ -253,7 +256,7 @@ class HomeViewTests(TestCase):
 # View tests — inspection
 # ---------------------------------------------------------------------------
 class InspectionViewTests(TestCase):
-    """Tests for the inspection view."""
+    """Tests for the simplified inspection view."""
 
     def setUp(self):
         self.client = Client()
@@ -268,37 +271,47 @@ class InspectionViewTests(TestCase):
         response = self.client.get(self.url)
         self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
 
-    def test_shows_data_from_cache(self):
-        cache_data = {
-            "summary": {"station_count": 5, "price_count": 100},
-            "regions": [],
-            "latest_prices": [],
-            "snapshots": [],
-            "price_variations": {"increases": [], "decreases": []},
-        }
-        InspectionCache.objects.create(data=cache_data)
+    def test_shows_empty_state_when_no_db(self):
         self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
+        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+            response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["data"], cache_data)
-        self.assertIsNotNone(response.context["last_updated"])
+        self.assertEqual(response.context["snapshots"], [])
+        self.assertEqual(response.context["current_prices"], [])
+        self.assertIsNone(response.context["selected_date"])
 
-    def test_shows_none_when_no_cache(self):
-        self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNone(response.context["data"])
+    def test_shows_snapshots_and_prices_with_data(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            self.client.login(username="testuser", password="testpass123")
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                response = self.client.get(self.url)
+            self.assertEqual(response.status_code, 200)
+            self.assertGreater(len(response.context["snapshots"]), 0)
+            self.assertGreater(len(response.context["current_prices"]), 0)
+            self.assertIsNotNone(response.context["selected_date"])
+        finally:
+            shutil.rmtree(db_dir)
 
-    def test_default_inspection_interval(self):
-        self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertEqual(response.context["inspection_interval"], 5)
-
-    @patch.dict(os.environ, {"INSPECTION_REFRESH_INTERVAL_MINUTES": "15"})
-    def test_custom_inspection_interval(self):
-        self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertEqual(response.context["inspection_interval"], 15)
+    def test_date_pagination(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            self.client.login(username="testuser", password="testpass123")
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                # Default: most recent date
+                response = self.client.get(self.url)
+                self.assertEqual(response.context["selected_date"], "2024-01-02")
+                # Navigate to older date
+                response = self.client.get(self.url + "?date=2024-01-01")
+                self.assertEqual(response.context["selected_date"], "2024-01-01")
+                self.assertEqual(response.context["next_date"], "2024-01-02")
+                self.assertIsNone(response.context["prev_date"])
+        finally:
+            shutil.rmtree(db_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -727,10 +740,10 @@ class RefreshCacheManualModeTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# View tests — inspection view with manual mode
+# View tests — inspection view renders with no database
 # ---------------------------------------------------------------------------
-class InspectionViewManualModeTests(TestCase):
-    """Tests for the inspection view with manual mode context."""
+class InspectionViewNoDatabaseTests(TestCase):
+    """Tests that the inspection view renders gracefully without data."""
 
     def setUp(self):
         self.client = Client()
@@ -741,21 +754,108 @@ class InspectionViewManualModeTests(TestCase):
         )
         self.url = reverse("inspection")
 
-    def test_manual_mode_in_context(self):
-        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
+    def test_renders_ok_with_nonexistent_db(self):
         self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertTrue(response.context["manual_mode"])
+        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["all_dates"], [])
 
-    def test_no_next_refresh_in_manual_mode(self):
-        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
-        self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertIsNone(response.context["next_refresh"])
+    def test_invalid_date_param_falls_back_to_latest(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            self.client.login(username="testuser", password="testpass123")
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                response = self.client.get(self.url + "?date=9999-12-31")
+            self.assertEqual(response.context["selected_date"], "2024-01-02")
+        finally:
+            shutil.rmtree(db_dir)
 
-    def test_auto_mode_shows_next_refresh(self):
-        SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=False)
-        self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(self.url)
-        self.assertFalse(response.context["manual_mode"])
-        self.assertIsNotNone(response.context["next_refresh"])
+
+# ---------------------------------------------------------------------------
+# Service tests — get_snapshot_dates
+# ---------------------------------------------------------------------------
+class GetSnapshotDatesTests(TestCase):
+    """Tests for get_snapshot_dates service."""
+
+    def test_returns_empty_when_db_does_not_exist(self):
+        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+            dates = get_snapshot_dates()
+        self.assertEqual(dates, [])
+
+    def test_returns_dates_in_descending_order(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                dates = get_snapshot_dates()
+            self.assertEqual(dates, ["2024-01-02", "2024-01-01"])
+        finally:
+            shutil.rmtree(db_dir)
+
+
+# ---------------------------------------------------------------------------
+# Service tests — get_snapshots_for_date
+# ---------------------------------------------------------------------------
+class GetSnapshotsForDateTests(TestCase):
+    """Tests for get_snapshots_for_date service."""
+
+    def test_returns_empty_when_db_does_not_exist(self):
+        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+            snaps = get_snapshots_for_date("2024-01-01")
+        self.assertEqual(snaps, [])
+
+    def test_returns_snapshots_for_given_date(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                snaps = get_snapshots_for_date("2024-01-01")
+            self.assertEqual(len(snaps), 1)
+            self.assertEqual(snaps[0]["fetched_at"], "2024-01-01 10:00:00")
+            self.assertEqual(snaps[0]["record_count"], 2)
+        finally:
+            shutil.rmtree(db_dir)
+
+    def test_returns_empty_for_nonexistent_date(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                snaps = get_snapshots_for_date("2099-01-01")
+            self.assertEqual(snaps, [])
+        finally:
+            shutil.rmtree(db_dir)
+
+
+# ---------------------------------------------------------------------------
+# Service tests — get_current_prices
+# ---------------------------------------------------------------------------
+class GetCurrentPricesTests(TestCase):
+    """Tests for get_current_prices service."""
+
+    def test_returns_empty_when_db_does_not_exist(self):
+        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+            prices, ts = get_current_prices()
+        self.assertEqual(prices, [])
+        self.assertIsNone(ts)
+
+    def test_returns_prices_from_latest_snapshot(self):
+        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
+        db_path = os.path.join(db_dir, "test_fuel.db")
+        try:
+            _create_test_db(db_path)
+            with patch("dashboard.services.DATABASE_PATH", db_path):
+                prices, ts = get_current_prices()
+            self.assertEqual(len(prices), 2)
+            self.assertEqual(ts, "2024-01-02 10:00:00")
+            station_names = [p["station_name"] for p in prices]
+            self.assertIn("Station A", station_names)
+            self.assertIn("Station B", station_names)
+        finally:
+            shutil.rmtree(db_dir)
