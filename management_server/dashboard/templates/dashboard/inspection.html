@@ -6,6 +6,16 @@
         <div class="col-auto">
             <h2 class="page-title">Inspection des données</h2>
         </div>
+        {% if request.user.role == 'admin' %}
+        <div class="col-auto ms-auto">
+            <form method="post" action="{% url 'refresh_snapshots' %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">
+                    Rafraîchir les snapshots
+                </button>
+            </form>
+        </div>
+        {% endif %}
     </div>
 </div>
 

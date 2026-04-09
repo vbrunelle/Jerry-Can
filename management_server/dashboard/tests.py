@@ -1,7 +1,6 @@
 import csv
 import os
 import shutil
-import sqlite3
 import tempfile
 from datetime import timedelta
 from io import StringIO
@@ -10,7 +9,7 @@ from unittest.mock import patch
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -29,58 +28,50 @@ User = get_user_model()
 
 
 # ---------------------------------------------------------------------------
-# Helper: create a minimal fuel_prices.db for service tests
+# Sample data returned by the mocked Hudi helpers
 # ---------------------------------------------------------------------------
-def _create_test_db(db_path):
-    """Create a test SQLite database with stations and prices tables."""
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE stations (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            address TEXT,
-            city TEXT,
-            region TEXT,
-            latitude REAL,
-            longitude REAL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE prices (
-            id INTEGER PRIMARY KEY,
-            station_id INTEGER,
-            fuel_type TEXT,
-            price REAL,
-            fetched_at TEXT,
-            FOREIGN KEY (station_id) REFERENCES stations(id)
-        )
-    """)
-    conn.execute("""
-        INSERT INTO stations (id, name, address, city, region, latitude, longitude)
-        VALUES (1, 'Station A', '123 Rue Principale', 'Montréal', 'Québec', 45.5, -73.5)
-    """)
-    conn.execute("""
-        INSERT INTO stations (id, name, address, city, region, latitude, longitude)
-        VALUES (2, 'Station B', '456 Rue Second', 'Québec', 'Québec', 46.8, -71.2)
-    """)
-    conn.execute("""
-        INSERT INTO prices (station_id, fuel_type, price, fetched_at)
-        VALUES (1, 'regular', 1.55, '2024-01-01 10:00:00')
-    """)
-    conn.execute("""
-        INSERT INTO prices (station_id, fuel_type, price, fetched_at)
-        VALUES (2, 'regular', 1.60, '2024-01-01 10:00:00')
-    """)
-    conn.execute("""
-        INSERT INTO prices (station_id, fuel_type, price, fetched_at)
-        VALUES (1, 'regular', 1.58, '2024-01-02 10:00:00')
-    """)
-    conn.execute("""
-        INSERT INTO prices (station_id, fuel_type, price, fetched_at)
-        VALUES (2, 'regular', 1.57, '2024-01-02 10:00:00')
-    """)
-    conn.commit()
-    conn.close()
+_SAMPLE_SNAPSHOT_DATES = ["2024-01-02", "2024-01-01"]
+
+_SAMPLE_SNAPSHOTS_JAN02 = [
+    {"fetched_at": "2024-01-02 10:00:00", "record_count": 2},
+]
+
+_SAMPLE_SNAPSHOTS_JAN01 = [
+    {"fetched_at": "2024-01-01 10:00:00", "record_count": 2},
+]
+
+_SAMPLE_CURRENT_PRICES = (
+    [
+        {"station_name": "Station A", "city": "Montréal", "region": "Québec", "fuel_type": "regular", "price": 1.58},
+        {"station_name": "Station B", "city": "Québec", "region": "Québec", "fuel_type": "regular", "price": 1.57},
+    ],
+    "2024-01-02 10:00:00",
+)
+
+_SAMPLE_INSPECTION_DATA = {
+    "summary": {
+        "station_count": 2,
+        "price_count": 4,
+        "snapshot_count": 2,
+        "first_snapshot": "2024-01-01 10:00:00",
+        "last_snapshot": "2024-01-02 10:00:00",
+    },
+    "regions": [
+        {"region": "Québec", "station_count": 2, "avg_prices": {"regular": 1.575}},
+    ],
+    "latest_prices": [
+        {"station_name": "Station B", "city": "Québec", "region": "Québec", "fuel_type": "regular", "price": 1.57},
+        {"station_name": "Station A", "city": "Montréal", "region": "Québec", "fuel_type": "regular", "price": 1.58},
+    ],
+    "snapshots": [
+        {"fetched_at": "2024-01-02 10:00:00", "record_count": 2, "changes": 2},
+        {"fetched_at": "2024-01-01 10:00:00", "record_count": 2, "changes": 2},
+    ],
+    "price_variations": {
+        "increases": [{"station_name": "Station A", "city": "Montréal", "fuel_type": "regular", "prev_price": 1.5, "price": 1.6, "delta": 0.1}],
+        "decreases": [],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +80,8 @@ def _create_test_db(db_path):
 class GetInspectionDataTests(TestCase):
     """Tests for get_inspection_data service."""
 
-    def test_returns_empty_data_when_db_does_not_exist(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+    def test_returns_empty_data_when_hudi_dir_does_not_exist(self):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             data = get_inspection_data()
         self.assertEqual(data["summary"]["station_count"], 0)
         self.assertEqual(data["summary"]["price_count"], 0)
@@ -98,25 +89,20 @@ class GetInspectionDataTests(TestCase):
         self.assertEqual(data["latest_prices"], [])
         self.assertEqual(data["snapshots"], [])
 
-    def test_returns_proper_structure_with_data(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                data = get_inspection_data()
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    @patch("src.price_history.get_inspection_data", return_value=_SAMPLE_INSPECTION_DATA)
+    def test_returns_proper_structure_with_data(self, _mock_insp, _mock_isdir):
+        data = get_inspection_data()
 
-            self.assertEqual(data["summary"]["station_count"], 2)
-            self.assertEqual(data["summary"]["price_count"], 4)
-            self.assertIsNotNone(data["summary"]["first_snapshot"])
-            self.assertIsNotNone(data["summary"]["last_snapshot"])
-            self.assertGreater(len(data["regions"]), 0)
-            self.assertGreater(len(data["latest_prices"]), 0)
-            self.assertGreater(len(data["snapshots"]), 0)
-            self.assertIn("increases", data["price_variations"])
-            self.assertIn("decreases", data["price_variations"])
-        finally:
-            shutil.rmtree(db_dir)
+        self.assertEqual(data["summary"]["station_count"], 2)
+        self.assertEqual(data["summary"]["price_count"], 4)
+        self.assertIsNotNone(data["summary"]["first_snapshot"])
+        self.assertIsNotNone(data["summary"]["last_snapshot"])
+        self.assertGreater(len(data["regions"]), 0)
+        self.assertGreater(len(data["latest_prices"]), 0)
+        self.assertGreater(len(data["snapshots"]), 0)
+        self.assertIn("increases", data["price_variations"])
+        self.assertIn("decreases", data["price_variations"])
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +112,14 @@ class RefreshInspectionCacheTests(TestCase):
     """Tests for refresh_inspection_cache service."""
 
     def test_creates_inspection_cache_record(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             refresh_inspection_cache()
         self.assertEqual(InspectionCache.objects.count(), 1)
         cache = InspectionCache.objects.first()
         self.assertIn("summary", cache.data)
 
     def test_keeps_only_latest_cache_entry(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             refresh_inspection_cache()
             refresh_inspection_cache()
         self.assertEqual(InspectionCache.objects.count(), 1)
@@ -182,45 +168,41 @@ class GenerateCsvForUserTests(TestCase):
     def tearDown(self):
         shutil.rmtree(self.download_dir, ignore_errors=True)
 
-    def test_generates_csv_file(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            dr = DownloadRequest.objects.create(user=self.user)
-
-            real_makedirs = os.makedirs
-            real_open = open
-
-            def mock_makedirs(path, **kwargs):
-                if "/data/downloads/" in path:
-                    path = path.replace("/data/downloads/", self.download_dir + "/")
-                return real_makedirs(path, **kwargs)
-
-            def mock_open(path, *args, **kwargs):
-                if "/data/downloads/" in str(path):
-                    path = path.replace("/data/downloads/", self.download_dir + "/")
-                return real_open(path, *args, **kwargs)
-
-            with patch("dashboard.services.DATABASE_PATH", db_path), \
-                 patch("os.makedirs", side_effect=mock_makedirs), \
-                 patch("builtins.open", side_effect=mock_open):
-                generate_csv_for_user(dr.pk)
-
-            dr.refresh_from_db()
-            self.assertEqual(dr.status, "ready")
-            self.assertIsNotNone(dr.completed_at)
-            self.assertTrue(dr.file_path.endswith(".csv"))
-        finally:
-            shutil.rmtree(db_dir)
-
-    def test_error_when_db_not_found(self):
+    @patch("dashboard.services._generate_csv_from_hudi")
+    def test_generates_csv_file(self, mock_gen_csv):
         dr = DownloadRequest.objects.create(user=self.user)
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+
+        real_makedirs = os.makedirs
+
+        def mock_makedirs(path, **kwargs):
+            if "/data/downloads/" in path:
+                path = path.replace("/data/downloads/", self.download_dir + "/")
+            return real_makedirs(path, **kwargs)
+
+        with patch("os.makedirs", side_effect=mock_makedirs):
+            generate_csv_for_user(dr.pk)
+
+        dr.refresh_from_db()
+        self.assertEqual(dr.status, "ready")
+        self.assertIsNotNone(dr.completed_at)
+        self.assertTrue(dr.file_path.endswith(".csv"))
+
+    @patch("dashboard.services._generate_csv_from_hudi", side_effect=ValueError("No data"))
+    def test_error_when_no_hudi_data(self, _mock_gen):
+        dr = DownloadRequest.objects.create(user=self.user)
+
+        real_makedirs = os.makedirs
+
+        def mock_makedirs(path, **kwargs):
+            if "/data/downloads/" in path:
+                path = path.replace("/data/downloads/", self.download_dir + "/")
+            return real_makedirs(path, **kwargs)
+
+        with patch("os.makedirs", side_effect=mock_makedirs):
             generate_csv_for_user(dr.pk)
         dr.refresh_from_db()
         self.assertEqual(dr.status, "error")
-        self.assertTrue(dr.error_message)  # error message is set
+        self.assertTrue(dr.error_message)
 
     def test_nonexistent_request_id(self):
         # Should not raise — just return silently
@@ -271,47 +253,49 @@ class InspectionViewTests(TestCase):
         response = self.client.get(self.url)
         self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
 
-    def test_shows_empty_state_when_no_db(self):
+    def test_shows_empty_state_when_no_hudi_dir(self):
         self.client.login(username="testuser", password="testpass123")
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["snapshots"], [])
         self.assertEqual(response.context["current_prices"], [])
         self.assertIsNone(response.context["selected_date"])
 
-    def test_shows_snapshots_and_prices_with_data(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            self.client.login(username="testuser", password="testpass123")
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                response = self.client.get(self.url)
-            self.assertEqual(response.status_code, 200)
-            self.assertGreater(len(response.context["snapshots"]), 0)
-            self.assertGreater(len(response.context["current_prices"]), 0)
-            self.assertIsNotNone(response.context["selected_date"])
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
+    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    def test_shows_snapshots_and_prices_with_data(self, *_mocks):
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(response.context["snapshots"]), 0)
+        self.assertGreater(len(response.context["current_prices"]), 0)
+        self.assertIsNotNone(response.context["selected_date"])
 
-    def test_date_pagination(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            self.client.login(username="testuser", password="testpass123")
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                # Default: most recent date
-                response = self.client.get(self.url)
-                self.assertEqual(response.context["selected_date"], "2024-01-02")
-                # Navigate to older date
-                response = self.client.get(self.url + "?date=2024-01-01")
-                self.assertEqual(response.context["selected_date"], "2024-01-01")
-                self.assertEqual(response.context["next_date"], "2024-01-02")
-                self.assertIsNone(response.context["prev_date"])
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("src.price_history.get_snapshots_for_date")
+    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    def test_date_pagination(self, _mock_isdir, _mock_dates, mock_snaps, _mock_prices):
+        def _snaps_side(table_path, date_str):
+            if date_str == "2024-01-02":
+                return _SAMPLE_SNAPSHOTS_JAN02
+            if date_str == "2024-01-01":
+                return _SAMPLE_SNAPSHOTS_JAN01
+            return []
+        mock_snaps.side_effect = _snaps_side
+
+        self.client.login(username="testuser", password="testpass123")
+        # Default: most recent date
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["selected_date"], "2024-01-02")
+        # Navigate to older date
+        response = self.client.get(self.url + "?date=2024-01-01")
+        self.assertEqual(response.context["selected_date"], "2024-01-01")
+        self.assertEqual(response.context["next_date"], "2024-01-02")
+        self.assertIsNone(response.context["prev_date"])
 
 
 # ---------------------------------------------------------------------------
@@ -717,7 +701,7 @@ class ManualInspectionEnabledTests(TestCase):
 class RefreshCacheManualModeTests(TestCase):
     """Tests for the refresh_cache command respecting manual mode."""
 
-    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    @patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi")
     def test_skips_when_manual_mode_enabled(self):
         SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
         initial_count = InspectionCache.objects.count()
@@ -726,13 +710,13 @@ class RefreshCacheManualModeTests(TestCase):
         self.assertEqual(InspectionCache.objects.count(), initial_count)
         self.assertIn("Manual inspection mode is enabled", out.getvalue())
 
-    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    @patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi")
     def test_runs_when_manual_mode_disabled(self):
         SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=False)
         call_command("refresh_cache")
         self.assertEqual(InspectionCache.objects.count(), 1)
 
-    @patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db")
+    @patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi")
     def test_force_overrides_manual_mode(self):
         SiteConfiguration.objects.create(pk=1, manual_inspection_enabled=True)
         call_command("refresh_cache", force=True)
@@ -740,7 +724,7 @@ class RefreshCacheManualModeTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# View tests — inspection view renders with no database
+# View tests — inspection view renders with no data
 # ---------------------------------------------------------------------------
 class InspectionViewNoDatabaseTests(TestCase):
     """Tests that the inspection view renders gracefully without data."""
@@ -754,24 +738,21 @@ class InspectionViewNoDatabaseTests(TestCase):
         )
         self.url = reverse("inspection")
 
-    def test_renders_ok_with_nonexistent_db(self):
+    def test_renders_ok_with_nonexistent_hudi_dir(self):
         self.client.login(username="testuser", password="testpass123")
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["all_dates"], [])
 
-    def test_invalid_date_param_falls_back_to_latest(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            self.client.login(username="testuser", password="testpass123")
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                response = self.client.get(self.url + "?date=9999-12-31")
-            self.assertEqual(response.context["selected_date"], "2024-01-02")
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
+    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    def test_invalid_date_param_falls_back_to_latest(self, *_mocks):
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url + "?date=9999-12-31")
+        self.assertEqual(response.context["selected_date"], "2024-01-02")
 
 
 # ---------------------------------------------------------------------------
@@ -780,21 +761,16 @@ class InspectionViewNoDatabaseTests(TestCase):
 class GetSnapshotDatesTests(TestCase):
     """Tests for get_snapshot_dates service."""
 
-    def test_returns_empty_when_db_does_not_exist(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+    def test_returns_empty_when_hudi_dir_does_not_exist(self):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             dates = get_snapshot_dates()
         self.assertEqual(dates, [])
 
-    def test_returns_dates_in_descending_order(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                dates = get_snapshot_dates()
-            self.assertEqual(dates, ["2024-01-02", "2024-01-01"])
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    def test_returns_dates_in_descending_order(self, _mock_dates, _mock_isdir):
+        dates = get_snapshot_dates()
+        self.assertEqual(dates, ["2024-01-02", "2024-01-01"])
 
 
 # ---------------------------------------------------------------------------
@@ -803,34 +779,24 @@ class GetSnapshotDatesTests(TestCase):
 class GetSnapshotsForDateTests(TestCase):
     """Tests for get_snapshots_for_date service."""
 
-    def test_returns_empty_when_db_does_not_exist(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+    def test_returns_empty_when_hudi_dir_does_not_exist(self):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             snaps = get_snapshots_for_date("2024-01-01")
         self.assertEqual(snaps, [])
 
-    def test_returns_snapshots_for_given_date(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                snaps = get_snapshots_for_date("2024-01-01")
-            self.assertEqual(len(snaps), 1)
-            self.assertEqual(snaps[0]["fetched_at"], "2024-01-01 10:00:00")
-            self.assertEqual(snaps[0]["record_count"], 2)
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN01)
+    def test_returns_snapshots_for_given_date(self, _mock_snaps, _mock_isdir):
+        snaps = get_snapshots_for_date("2024-01-01")
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(snaps[0]["fetched_at"], "2024-01-01 10:00:00")
+        self.assertEqual(snaps[0]["record_count"], 2)
 
-    def test_returns_empty_for_nonexistent_date(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                snaps = get_snapshots_for_date("2099-01-01")
-            self.assertEqual(snaps, [])
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    @patch("src.price_history.get_snapshots_for_date", return_value=[])
+    def test_returns_empty_for_nonexistent_date(self, _mock_snaps, _mock_isdir):
+        snaps = get_snapshots_for_date("2099-01-01")
+        self.assertEqual(snaps, [])
 
 
 # ---------------------------------------------------------------------------
@@ -839,23 +805,64 @@ class GetSnapshotsForDateTests(TestCase):
 class GetCurrentPricesTests(TestCase):
     """Tests for get_current_prices service."""
 
-    def test_returns_empty_when_db_does_not_exist(self):
-        with patch("dashboard.services.DATABASE_PATH", "/nonexistent/path.db"):
+    def test_returns_empty_when_hudi_dir_does_not_exist(self):
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
             prices, ts = get_current_prices()
         self.assertEqual(prices, [])
         self.assertIsNone(ts)
 
-    def test_returns_prices_from_latest_snapshot(self):
-        db_dir = tempfile.mkdtemp(dir=settings.BASE_DIR)
-        db_path = os.path.join(db_dir, "test_fuel.db")
-        try:
-            _create_test_db(db_path)
-            with patch("dashboard.services.DATABASE_PATH", db_path):
-                prices, ts = get_current_prices()
-            self.assertEqual(len(prices), 2)
-            self.assertEqual(ts, "2024-01-02 10:00:00")
-            station_names = [p["station_name"] for p in prices]
-            self.assertIn("Station A", station_names)
-            self.assertIn("Station B", station_names)
-        finally:
-            shutil.rmtree(db_dir)
+    @patch("dashboard.services.os.path.isdir", return_value=True)
+    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    def test_returns_prices_from_latest_snapshot(self, _mock_prices, _mock_isdir):
+        prices, ts = get_current_prices()
+        self.assertEqual(len(prices), 2)
+        self.assertEqual(ts, "2024-01-02 10:00:00")
+        station_names = [p["station_name"] for p in prices]
+        self.assertIn("Station A", station_names)
+        self.assertIn("Station B", station_names)
+
+
+# ---------------------------------------------------------------------------
+# View tests — trigger_refresh_snapshots
+# ---------------------------------------------------------------------------
+class TriggerRefreshSnapshotsViewTests(TestCase):
+    """Tests for the trigger_refresh_snapshots view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="admin",
+            password="adminpass123",
+            role="admin",
+            must_change_password=False,
+        )
+        self.normal = User.objects.create_user(
+            username="client",
+            password="clientpass123",
+            role="client",
+            must_change_password=False,
+        )
+        self.url = reverse("refresh_snapshots")
+
+    def test_requires_login(self):
+        response = self.client.post(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_get_redirects_to_inspection(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.get(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+
+    def test_non_admin_redirected_to_home(self):
+        self.client.login(username="client", password="clientpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("home"))
+
+    @patch("dashboard.views.refresh_snapshots")
+    @patch("dashboard.views.threading.Thread")
+    def test_admin_can_trigger_refresh(self, mock_thread_cls, mock_refresh):
+        mock_thread_instance = mock_thread_cls.return_value
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+        mock_thread_instance.start.assert_called_once()
