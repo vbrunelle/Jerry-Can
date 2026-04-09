@@ -16,6 +16,7 @@ from dashboard.services import (
     get_snapshot_dates,
     get_snapshots_for_date,
     refresh_inspection_cache,
+    refresh_snapshots,
 )
 
 
@@ -184,5 +185,23 @@ def trigger_inspection(request):
     )
     thread.start()
     messages.success(request, "Inspection manuelle déclenchée.")
+    return redirect('inspection')
+
+
+@login_required
+def trigger_refresh_snapshots(request):
+    """Refresh the snapshot list from the Hudi table data (admin only)."""
+    if request.method != 'POST':
+        return redirect('inspection')
+
+    if request.user.role != 'admin':
+        return redirect('home')
+
+    thread = threading.Thread(
+        target=refresh_snapshots,
+        daemon=True,
+    )
+    thread.start()
+    messages.success(request, "Rafraîchissement des snapshots déclenché.")
     return redirect('inspection')
 

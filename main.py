@@ -13,10 +13,8 @@ if PERSISTENCE_BACKEND == "hudi":
     from src.hudi_writer import init_hudi as init_db
     from src.hudi_writer import save_snapshot
     from src.hudi_writer import stop as _stop_backend
-    import src.database as _sqlite_db  # SQLite mirror for the management server
 else:
     from src.database import init_db, save_snapshot
-    _sqlite_db = None  # not needed in sqlite-only mode
 
     def _stop_backend() -> None:  # noqa: E303
         """No-op for the SQLite backend."""
@@ -38,8 +36,6 @@ def run_once() -> None:
     """Fetch current fuel prices and persist them to the database."""
     try:
         records = source.fetch()
-        if _sqlite_db is not None:
-            _sqlite_db.save_snapshot(records)  # fast write first — unblocks the management server UI
         count = save_snapshot(records)
         logger.info("Snapshot complete: %d records stored.", count)
     except Exception as exc:  # noqa: BLE001
@@ -64,8 +60,6 @@ def main() -> None:
         PERSISTENCE_BACKEND,
     )
     init_db()
-    if _sqlite_db is not None:
-        _sqlite_db.init_db()  # initialise the SQLite mirror for the management server
 
     # Run immediately on startup, then every FETCH_INTERVAL_MINUTES minutes
     run_once()

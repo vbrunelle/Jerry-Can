@@ -6,6 +6,7 @@ urlpatterns = [
     path('', views.home, name='home'),
     path('inspection/', views.inspection, name='inspection'),
     path('inspection/trigger/', views.trigger_inspection, name='trigger_inspection'),
+    path('inspection/refresh-snapshots/', views.trigger_refresh_snapshots, name='refresh_snapshots'),
     path('settings/', views.settings_view, name='settings'),
     path('download/', views.request_download, name='request_download'),
     path('download/<int:request_id>/status/', views.download_status, name='download_status'),

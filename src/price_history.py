@@ -226,3 +226,195 @@ def get_snapshots_data(table_path: str, limit: int = 10) -> list[dict]:
             "changes": chg,
         })
     return result
+
+
+# ------------------------------------------------------------------
+# Helpers for the management-server dashboard (Hudi-native reads)
+# ------------------------------------------------------------------
+
+def get_snapshot_dates(table_path: str) -> list[str]:
+    """Return distinct snapshot dates (YYYY-MM-DD) from Hudi, most recent first."""
+    all_df = _read_all_parquet(table_path)
+    if all_df.empty:
+        return []
+
+    fetched = pd.to_datetime(all_df["fetched_at"], errors="coerce")
+    dates = fetched.dt.date.dropna().unique()
+    return sorted((d.isoformat() for d in dates), reverse=True)
+
+
+def get_snapshots_for_date(table_path: str, date_str: str) -> list[dict]:
+    """Return snapshots for a given date (YYYY-MM-DD) from Hudi, most recent first.
+
+    Each dict has: fetched_at (str), record_count (int).
+    """
+    all_df = _read_all_parquet(table_path)
+    if all_df.empty:
+        return []
+
+    fetched = pd.to_datetime(all_df["fetched_at"], errors="coerce")
+    mask = fetched.dt.date.astype(str) == date_str
+    subset = all_df.loc[mask]
+    if subset.empty:
+        return []
+
+    counts = subset.groupby("fetched_at").size().reset_index(name="record_count")
+    counts = counts.sort_values("fetched_at", ascending=False)
+    return [
+        {"fetched_at": str(row["fetched_at"]), "record_count": int(row["record_count"])}
+        for _, row in counts.iterrows()
+    ]
+
+
+def get_current_prices(table_path: str) -> tuple[list[dict], str | None]:
+    """Return (prices, latest_ts) from the most recent snapshot in Hudi.
+
+    *prices* is a list of dicts with keys: station_name, city, region,
+    fuel_type, price.  *latest_ts* is the ``fetched_at`` value of the
+    latest snapshot, or ``None`` when no data exists.
+    """
+    all_df = _read_all_parquet(table_path)
+    if all_df.empty:
+        return [], None
+
+    latest_ts = all_df["fetched_at"].max()
+    latest = all_df[all_df["fetched_at"] == latest_ts]
+
+    latest = latest.sort_values(["region", "city", "station_name", "fuel_type"])
+    prices = [
+        {
+            "station_name": str(row.get("station_name", "")),
+            "city": str(row.get("city", "")),
+            "region": str(row.get("region", "")),
+            "fuel_type": str(row.get("fuel_type", "")),
+            "price": float(row["price"]),
+        }
+        for _, row in latest.iterrows()
+    ]
+    ts_str = latest_ts.isoformat() if hasattr(latest_ts, "isoformat") else str(latest_ts)
+    return prices, ts_str
+
+
+def get_inspection_data(table_path: str) -> dict[str, Any]:
+    """Return a dict with inspection data read entirely from Hudi.
+
+    Keys: summary, regions, latest_prices, snapshots, price_variations.
+    """
+    all_df = _read_all_parquet(table_path)
+
+    empty = {
+        "summary": {
+            "station_count": 0,
+            "price_count": 0,
+            "snapshot_count": 0,
+            "first_snapshot": None,
+            "last_snapshot": None,
+        },
+        "regions": [],
+        "latest_prices": [],
+        "snapshots": [],
+        "price_variations": {"increases": [], "decreases": []},
+    }
+
+    if all_df.empty:
+        return empty
+
+    # --- Summary ---
+    station_count = int(all_df["station_id"].nunique())
+    price_count = len(all_df)
+    snapshot_count = int(all_df["fetched_at"].nunique())
+    first_snapshot = str(all_df["fetched_at"].min())
+    last_snapshot = str(all_df["fetched_at"].max())
+
+    summary = {
+        "station_count": station_count,
+        "price_count": price_count,
+        "snapshot_count": snapshot_count,
+        "first_snapshot": first_snapshot,
+        "last_snapshot": last_snapshot,
+    }
+
+    # --- Regions ---
+    stations = all_df.drop_duplicates(subset=["station_id"])[
+        ["station_id", "region"]
+    ]
+    region_counts = stations.groupby("region").size().reset_index(name="station_count")
+
+    latest_ts = all_df["fetched_at"].max()
+    latest = all_df[all_df["fetched_at"] == latest_ts]
+    avg_prices = (
+        latest.groupby(["region", "fuel_type"])["price"]
+        .mean()
+        .round(1)
+        .reset_index()
+    )
+    avg_map: dict[str, dict[str, float]] = {}
+    for _, row in avg_prices.iterrows():
+        region_key = row["region"] or "N/A"
+        avg_map.setdefault(region_key, {})[row["fuel_type"]] = row["price"]
+
+    regions = []
+    for _, row in region_counts.sort_values("station_count", ascending=False).iterrows():
+        region_name = row["region"] or "N/A"
+        regions.append({
+            "region": region_name,
+            "station_count": int(row["station_count"]),
+            "avg_prices": avg_map.get(region_name, {}),
+        })
+
+    # --- Latest prices (lowest 50) ---
+    latest_sorted = latest.sort_values("price").head(50)
+    latest_prices = [
+        {
+            "station_name": str(r.get("station_name", "")),
+            "city": str(r.get("city", "")),
+            "region": str(r.get("region", "")),
+            "fuel_type": str(r.get("fuel_type", "")),
+            "price": float(r["price"]),
+        }
+        for _, r in latest_sorted.iterrows()
+    ]
+
+    # --- Snapshots (last 10) ---
+    snapshots = get_snapshots_data(table_path, limit=10)
+
+    # --- Price variations ---
+    hist = build_historicized_changes_pandas(table_path)
+    increases: list[dict] = []
+    decreases: list[dict] = []
+    if not hist.empty:
+        updates = hist.dropna(subset=["delta"])
+        if not updates.empty:
+            # Most recent change per (station_id, fuel_type)
+            updates = updates.sort_values("fetched_at", ascending=False)
+            last_per_key = updates.drop_duplicates(subset=["station_id", "fuel_type"])
+
+            rises = last_per_key[last_per_key["delta"] > 0].nlargest(10, "delta")
+            drops = last_per_key[last_per_key["delta"] < 0].nsmallest(10, "delta")
+
+            for _, r in rises.iterrows():
+                increases.append({
+                    "station_name": str(r.get("station_name", "")),
+                    "city": str(r.get("city", "")),
+                    "fuel_type": str(r.get("fuel_type", "")),
+                    "prev_price": round(float(r["prev_price"]), 1),
+                    "price": round(float(r["price"]), 1),
+                    "delta": round(float(r["delta"]), 1),
+                })
+            for _, r in drops.iterrows():
+                decreases.append({
+                    "station_name": str(r.get("station_name", "")),
+                    "city": str(r.get("city", "")),
+                    "fuel_type": str(r.get("fuel_type", "")),
+                    "prev_price": round(float(r["prev_price"]), 1),
+                    "price": round(float(r["price"]), 1),
+                    "delta": round(float(r["delta"]), 1),
+                })
+
+    return {
+        "summary": summary,
+        "regions": regions,
+        "latest_prices": latest_prices,
+        "snapshots": snapshots,
+        "price_variations": {"increases": increases, "decreases": decreases},
+    }
