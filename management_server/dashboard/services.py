@@ -41,6 +41,108 @@ def _empty_inspection_data():
     }
 
 
+def get_snapshot_dates():
+    """Return a list of distinct snapshot dates (YYYY-MM-DD), most recent first."""
+    db_path = DATABASE_PATH
+    if not os.path.exists(db_path):
+        return []
+
+    try:
+        conn = _connect(db_path)
+    except sqlite3.Error:
+        return []
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT DATE(fetched_at) AS snapshot_date
+            FROM prices
+            ORDER BY snapshot_date DESC
+            """
+        ).fetchall()
+        return [row['snapshot_date'] for row in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def get_snapshots_for_date(date_str):
+    """Return snapshots for a given date (YYYY-MM-DD), most recent first."""
+    db_path = DATABASE_PATH
+    if not os.path.exists(db_path):
+        return []
+
+    try:
+        conn = _connect(db_path)
+    except sqlite3.Error:
+        return []
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT fetched_at, COUNT(*) AS record_count
+            FROM prices
+            WHERE DATE(fetched_at) = ?
+            GROUP BY fetched_at
+            ORDER BY fetched_at DESC
+            """,
+            (date_str,),
+        ).fetchall()
+        return [
+            {'fetched_at': row['fetched_at'], 'record_count': row['record_count']}
+            for row in rows
+        ]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def get_current_prices():
+    """Return current prices for all stations from the latest snapshot."""
+    db_path = DATABASE_PATH
+    if not os.path.exists(db_path):
+        return [], None
+
+    try:
+        conn = _connect(db_path)
+    except sqlite3.Error:
+        return [], None
+
+    try:
+        latest_ts = conn.execute("SELECT MAX(fetched_at) FROM prices").fetchone()[0]
+        if not latest_ts:
+            return [], None
+
+        rows = conn.execute(
+            """
+            SELECT s.name AS station_name, s.city, s.region,
+                   p.fuel_type, p.price
+            FROM prices p
+            JOIN stations s ON s.id = p.station_id
+            WHERE p.fetched_at = ?
+            ORDER BY s.region, s.city, s.name, p.fuel_type
+            """,
+            (latest_ts,),
+        ).fetchall()
+        prices = [
+            {
+                'station_name': row['station_name'],
+                'city': row['city'],
+                'region': row['region'],
+                'fuel_type': row['fuel_type'],
+                'price': row['price'],
+            }
+            for row in rows
+        ]
+        return prices, latest_ts
+    except sqlite3.Error:
+        return [], None
+    finally:
+        conn.close()
+
+
 def get_inspection_data():
     """Return a dict with inspection data from the SQLite database."""
     db_path = DATABASE_PATH

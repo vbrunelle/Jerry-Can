@@ -1,7 +1,6 @@
 import os
 import threading
-import time
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -10,27 +9,19 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from dashboard.forms import SiteConfigurationForm
-from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
-from dashboard.services import generate_csv_for_user, refresh_inspection_cache, _REFRESH_RUNNING_FILE
+from dashboard.models import DownloadRequest, SiteConfiguration
+from dashboard.services import (
+    generate_csv_for_user,
+    get_current_prices,
+    get_snapshot_dates,
+    get_snapshots_for_date,
+    refresh_inspection_cache,
+)
 
 
 @login_required
 def home(request):
     return render(request, 'dashboard/home.html')
-
-
-def _cache_needs_refresh(cache):
-    """Return True if the cache is missing, stale, or lacks the 'changes' key."""
-    if cache is None:
-        return True
-    # Stale: cached when DB was empty
-    if cache.data.get('summary', {}).get('price_count', 0) == 0:
-        return True
-    # Missing 'changes' key (cache created before feature was added)
-    snapshots = cache.data.get('snapshots', [])
-    if snapshots and 'changes' not in snapshots[0]:
-        return True
-    return False
 
 
 def _get_inspection_interval():
@@ -70,43 +61,35 @@ def _next_cron_run():
 
 @login_required
 def inspection(request):
-    cache = InspectionCache.objects.order_by('-created_at').first()
+    # --- Snapshot dates & pagination ---
+    all_dates = get_snapshot_dates()
+    selected_date = request.GET.get('date')
+    if selected_date not in all_dates:
+        selected_date = all_dates[0] if all_dates else None
 
-    # Detect if a refresh is currently running and when it started
-    refresh_started_at = None
-    try:
-        with open(_REFRESH_RUNNING_FILE) as f:
-            ts = float(f.read().strip())
-        refresh_started_at = datetime.fromtimestamp(ts, tz=dt_timezone.utc)
-    except (OSError, ValueError):
-        pass
+    snapshots = get_snapshots_for_date(selected_date) if selected_date else []
 
-    last_duration = cache.duration_seconds if cache else None
-    manual_mode = _is_manual_inspection_enabled()
+    # Prev / next date navigation
+    prev_date = None
+    next_date = None
+    if selected_date and all_dates:
+        idx = all_dates.index(selected_date)
+        if idx > 0:
+            next_date = all_dates[idx - 1]  # more recent
+        if idx < len(all_dates) - 1:
+            prev_date = all_dates[idx + 1]  # older
 
-    next_refresh = None
-    if not refresh_started_at and not manual_mode:
-        next_refresh = _next_cron_run()
-
-    # Estimated completion:
-    # - if running:   start_time + last_duration
-    # - if idle:      next_refresh + last_duration
-    estimated_completion = None
-    if last_duration:
-        base = refresh_started_at if refresh_started_at else next_refresh
-        if base:
-            estimated_completion = base + timedelta(seconds=last_duration)
+    # --- Current prices ---
+    current_prices, prices_snapshot_ts = get_current_prices()
 
     context = {
-        'data': cache.data if cache else None,
-        'last_updated': cache.created_at if cache else None,
-        'last_duration': last_duration,
-        'cache_warming': cache is None or _cache_needs_refresh(cache),
-        'refresh_started_at': refresh_started_at,
-        'next_refresh': next_refresh,
-        'estimated_completion': estimated_completion,
-        'inspection_interval': _get_inspection_interval(),
-        'manual_mode': manual_mode,
+        'all_dates': all_dates,
+        'selected_date': selected_date,
+        'snapshots': snapshots,
+        'prev_date': prev_date,
+        'next_date': next_date,
+        'current_prices': current_prices,
+        'prices_snapshot_ts': prices_snapshot_ts,
     }
     return render(request, 'dashboard/inspection.html', context)
 
