@@ -6,6 +6,8 @@ from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
+import pandas as pd
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -15,6 +17,7 @@ from django.utils import timezone
 
 from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
+    _generate_csv_from_hudi,
     cleanup_expired_downloads,
     generate_csv_for_user,
     get_current_prices,
@@ -90,7 +93,7 @@ class GetInspectionDataTests(TestCase):
         self.assertEqual(data["snapshots"], [])
 
     @patch("dashboard.services.os.path.isdir", return_value=True)
-    @patch("src.price_history.get_inspection_data", return_value=_SAMPLE_INSPECTION_DATA)
+    @patch("price_history.get_inspection_data", return_value=_SAMPLE_INSPECTION_DATA)
     def test_returns_proper_structure_with_data(self, _mock_insp, _mock_isdir):
         data = get_inspection_data()
 
@@ -151,6 +154,48 @@ class CleanupExpiredDownloadsTests(TestCase):
         cleanup_expired_downloads()
         dr.refresh_from_db()
         self.assertEqual(dr.status, "ready")
+
+
+# ---------------------------------------------------------------------------
+# Service tests — _generate_csv_from_hudi
+# ---------------------------------------------------------------------------
+_SAMPLE_CSV_DF = pd.DataFrame([
+    {
+        "region": "Québec",
+        "city": "Montréal",
+        "station_name": "Station A",
+        "fuel_type": "regular",
+        "fetched_at": "2024-01-02 10:00:00",
+        "price": 1.58,
+    },
+])
+
+
+class GenerateCsvFromHudiTests(TestCase):
+    """Tests for _generate_csv_from_hudi — exercises the real import path."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    @patch("price_history.build_historicized_changes_pandas", return_value=_SAMPLE_CSV_DF)
+    def test_writes_csv_file(self, _mock_build):
+        file_path = os.path.join(self.tmp_dir, "test.csv")
+        _generate_csv_from_hudi(file_path)
+        self.assertTrue(os.path.exists(file_path))
+        with open(file_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["station_name"], "Station A")
+
+    @patch("price_history.build_historicized_changes_pandas", return_value=pd.DataFrame())
+    def test_raises_when_no_data(self, _mock_build):
+        file_path = os.path.join(self.tmp_dir, "test.csv")
+        with self.assertRaises(ValueError):
+            _generate_csv_from_hudi(file_path)
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +307,9 @@ class InspectionViewTests(TestCase):
         self.assertEqual(response.context["current_prices"], [])
         self.assertIsNone(response.context["selected_date"])
 
-    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
-    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
+    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
     @patch("dashboard.services.os.path.isdir", return_value=True)
     def test_shows_snapshots_and_prices_with_data(self, *_mocks):
         self.client.login(username="testuser", password="testpass123")
@@ -274,9 +319,9 @@ class InspectionViewTests(TestCase):
         self.assertGreater(len(response.context["current_prices"]), 0)
         self.assertIsNotNone(response.context["selected_date"])
 
-    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("src.price_history.get_snapshots_for_date")
-    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("price_history.get_snapshots_for_date")
+    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
     @patch("dashboard.services.os.path.isdir", return_value=True)
     def test_date_pagination(self, _mock_isdir, _mock_dates, mock_snaps, _mock_prices):
         def _snaps_side(table_path, date_str):
@@ -745,9 +790,9 @@ class InspectionViewNoDatabaseTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["all_dates"], [])
 
-    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
-    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
+    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
     @patch("dashboard.services.os.path.isdir", return_value=True)
     def test_invalid_date_param_falls_back_to_latest(self, *_mocks):
         self.client.login(username="testuser", password="testpass123")
@@ -767,7 +812,7 @@ class GetSnapshotDatesTests(TestCase):
         self.assertEqual(dates, [])
 
     @patch("dashboard.services.os.path.isdir", return_value=True)
-    @patch("src.price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
+    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
     def test_returns_dates_in_descending_order(self, _mock_dates, _mock_isdir):
         dates = get_snapshot_dates()
         self.assertEqual(dates, ["2024-01-02", "2024-01-01"])
@@ -785,7 +830,7 @@ class GetSnapshotsForDateTests(TestCase):
         self.assertEqual(snaps, [])
 
     @patch("dashboard.services.os.path.isdir", return_value=True)
-    @patch("src.price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN01)
+    @patch("price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN01)
     def test_returns_snapshots_for_given_date(self, _mock_snaps, _mock_isdir):
         snaps = get_snapshots_for_date("2024-01-01")
         self.assertEqual(len(snaps), 1)
@@ -793,7 +838,7 @@ class GetSnapshotsForDateTests(TestCase):
         self.assertEqual(snaps[0]["record_count"], 2)
 
     @patch("dashboard.services.os.path.isdir", return_value=True)
-    @patch("src.price_history.get_snapshots_for_date", return_value=[])
+    @patch("price_history.get_snapshots_for_date", return_value=[])
     def test_returns_empty_for_nonexistent_date(self, _mock_snaps, _mock_isdir):
         snaps = get_snapshots_for_date("2099-01-01")
         self.assertEqual(snaps, [])
@@ -812,7 +857,7 @@ class GetCurrentPricesTests(TestCase):
         self.assertIsNone(ts)
 
     @patch("dashboard.services.os.path.isdir", return_value=True)
-    @patch("src.price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
+    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
     def test_returns_prices_from_latest_snapshot(self, _mock_prices, _mock_isdir):
         prices, ts = get_current_prices()
         self.assertEqual(len(prices), 2)

@@ -13,12 +13,14 @@ HUDI_TABLE_PATH = os.getenv('HUDI_TABLE_PATH', '/data/hudi/fuel_prices')
 
 logger = logging.getLogger(__name__)
 
-# Add the project root to sys.path so ``price_history`` can be imported
-# regardless of the working directory (the management server often runs
-# from the ``management_server/`` sub-directory).
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+# Add the ``src/`` directory to sys.path so ``price_history`` can be
+# imported directly (``import price_history``) regardless of the working
+# directory.  In production Docker images the module lives next to
+# ``manage.py`` (already on ``sys.path``), so the extra entry is only
+# needed during local development where it resides under ``src/``.
+_SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+if os.path.isdir(_SRC_DIR) and _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 
 def _empty_inspection_data():
@@ -43,7 +45,7 @@ def get_snapshot_dates():
     if not os.path.isdir(HUDI_TABLE_PATH):
         return []
     try:
-        from src.price_history import get_snapshot_dates as _hudi_get_snapshot_dates
+        from price_history import get_snapshot_dates as _hudi_get_snapshot_dates
         return _hudi_get_snapshot_dates(HUDI_TABLE_PATH)
     except Exception:
         logger.debug("Failed to read snapshot dates from Hudi.", exc_info=True)
@@ -55,7 +57,7 @@ def get_snapshots_for_date(date_str):
     if not os.path.isdir(HUDI_TABLE_PATH):
         return []
     try:
-        from src.price_history import get_snapshots_for_date as _hudi_get_snapshots
+        from price_history import get_snapshots_for_date as _hudi_get_snapshots
         return _hudi_get_snapshots(HUDI_TABLE_PATH, date_str)
     except Exception:
         logger.debug("Failed to read snapshots for date from Hudi.", exc_info=True)
@@ -67,7 +69,7 @@ def get_current_prices():
     if not os.path.isdir(HUDI_TABLE_PATH):
         return [], None
     try:
-        from src.price_history import get_current_prices as _hudi_get_prices
+        from price_history import get_current_prices as _hudi_get_prices
         return _hudi_get_prices(HUDI_TABLE_PATH)
     except Exception:
         logger.debug("Failed to read current prices from Hudi.", exc_info=True)
@@ -79,7 +81,7 @@ def get_inspection_data():
     if not os.path.isdir(HUDI_TABLE_PATH):
         return _empty_inspection_data()
     try:
-        from src.price_history import get_inspection_data as _hudi_get_inspection
+        from price_history import get_inspection_data as _hudi_get_inspection
         return _hudi_get_inspection(HUDI_TABLE_PATH)
     except Exception:
         logger.debug("Failed to read inspection data from Hudi.", exc_info=True)
@@ -123,7 +125,7 @@ def generate_csv_for_user(download_request_id):
 
 def _generate_csv_from_hudi(file_path):
     """Export the full historicized price-change history from Hudi parquet."""
-    from src.price_history import build_historicized_changes_pandas
+    from price_history import build_historicized_changes_pandas
 
     df = build_historicized_changes_pandas(HUDI_TABLE_PATH)
     if df.empty:
