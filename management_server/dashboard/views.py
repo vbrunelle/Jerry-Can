@@ -11,7 +11,9 @@ from django.utils import timezone
 from dashboard.forms import SiteConfigurationForm
 from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
+    cancel_inspection_refresh,
     generate_csv_for_user,
+    is_refresh_running,
     refresh_inspection_cache,
     refresh_snapshots,
 )
@@ -60,6 +62,7 @@ def _next_cron_run():
 @login_required
 def inspection(request):
     cache = InspectionCache.objects.order_by('-created_at').first()
+    refresh_running, refresh_started_at = is_refresh_running()
 
     if cache is None:
         return render(request, 'dashboard/inspection.html', {
@@ -72,6 +75,8 @@ def inspection(request):
             'prices_snapshot_ts': None,
             'cache_age': None,
             'no_cache': True,
+            'refresh_running': refresh_running,
+            'refresh_started_at': refresh_started_at,
         })
 
     data = cache.data
@@ -115,6 +120,8 @@ def inspection(request):
         'prices_snapshot_ts': prices_snapshot_ts,
         'cache_age': cache.created_at,
         'no_cache': False,
+        'refresh_running': refresh_running,
+        'refresh_started_at': refresh_started_at,
     }
     return render(request, 'dashboard/inspection.html', context)
 
@@ -227,5 +234,29 @@ def trigger_refresh_snapshots(request):
     )
     thread.start()
     messages.success(request, "Rafraîchissement des snapshots déclenché.")
+    return redirect('inspection')
+
+
+@login_required
+def inspection_status(request):
+    """Return the current inspection refresh status as JSON."""
+    running, started_at = is_refresh_running()
+    return JsonResponse({
+        'is_running': running,
+        'started_at': started_at.isoformat() if started_at else None,
+    })
+
+
+@login_required
+def cancel_inspection(request):
+    """Cancel the running inspection cache refresh (admin only)."""
+    if request.method != 'POST':
+        return redirect('inspection')
+
+    if request.user.role != 'admin':
+        return redirect('home')
+
+    cancel_inspection_refresh()
+    messages.success(request, "Annulation de l'inspection en cours.")
     return redirect('inspection')
 

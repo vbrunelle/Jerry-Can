@@ -10,17 +10,41 @@
             {% endif %}
         </div>
         {% if request.user.role == 'admin' %}
-        <div class="col-auto ms-auto">
+        <div class="col-auto ms-auto d-flex gap-2">
+            {% if refresh_running %}
+            <form method="post" action="{% url 'cancel_inspection' %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                    Annuler l'inspection
+                </button>
+            </form>
+            {% else %}
             <form method="post" action="{% url 'refresh_snapshots' %}" class="d-inline">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-sm btn-outline-primary">
                     Rafraîchir les snapshots
                 </button>
             </form>
+            {% endif %}
         </div>
         {% endif %}
     </div>
 </div>
+
+{% if refresh_running %}
+<div class="alert alert-info mt-3" id="inspection-running-banner">
+    <div class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-info" role="status" aria-hidden="true"></div>
+        <div>
+            Inspection en cours
+            {% if refresh_started_at %}
+            depuis {{ refresh_started_at|time:"H:i" }}
+            {% endif %}
+            …
+        </div>
+    </div>
+</div>
+{% endif %}
 
 {% if no_cache %}
 <div class="alert alert-warning mt-3">
@@ -110,4 +134,27 @@
     {% endif %}
 </div>
 
+{% endblock %}
+
+{% block extra_js %}
+{% if refresh_running %}
+<script>
+(function () {
+    var wasRunning = true;
+    var statusUrl = "{% url 'inspection_status' %}";
+    var intervalId = setInterval(function () {
+        fetch(statusUrl, {headers: {Accept: "application/json"}})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (wasRunning && !data.is_running) {
+                    clearInterval(intervalId);
+                    window.location.reload();
+                }
+                wasRunning = data.is_running;
+            })
+            .catch(function () {});
+    }, 5000);
+})();
+</script>
+{% endif %}
 {% endblock %}

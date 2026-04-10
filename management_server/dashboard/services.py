@@ -157,12 +157,41 @@ def cleanup_expired_downloads():
 
 
 _REFRESH_RUNNING_FILE = '/tmp/refresh_cache_running'
+_REFRESH_CANCEL_FILE = '/tmp/refresh_cache_cancel'
+
+
+def is_refresh_running():
+    """Return (is_running, started_at) where started_at is a UTC datetime or None."""
+    import time as _time
+    from datetime import datetime, timezone as _tz
+    try:
+        with open(_REFRESH_RUNNING_FILE) as f:
+            content = f.read().strip()
+        started_at = datetime.fromtimestamp(float(content), tz=_tz.utc)
+        return True, started_at
+    except (OSError, ValueError):
+        return False, None
+
+
+def cancel_inspection_refresh():
+    """Signal that the running inspection cache refresh should be cancelled."""
+    try:
+        with open(_REFRESH_CANCEL_FILE, 'w') as f:
+            f.write('1')
+    except OSError:
+        pass
 
 
 def refresh_inspection_cache():
     """Fetch inspection data and save to InspectionCache."""
     import time
     from dashboard.models import InspectionCache
+
+    # Remove any stale cancel signal from a previous run
+    try:
+        os.remove(_REFRESH_CANCEL_FILE)
+    except OSError:
+        pass
 
     # Write start timestamp so the view can detect an in-progress refresh
     started_at = time.time()
@@ -177,6 +206,10 @@ def refresh_inspection_cache():
         data = get_inspection_data()
         duration = round(time.time() - t0, 1)
 
+        # Skip saving if a cancellation was requested while fetching data
+        if os.path.exists(_REFRESH_CANCEL_FILE):
+            return
+
         InspectionCache.objects.create(data=data, duration_seconds=duration)
         # Keep only the latest cache entry
         latest = InspectionCache.objects.order_by('-created_at').first()
@@ -184,8 +217,11 @@ def refresh_inspection_cache():
             InspectionCache.objects.exclude(pk=latest.pk).delete()
     finally:
         try:
-            import os as _os
-            _os.remove(_REFRESH_RUNNING_FILE)
+            os.remove(_REFRESH_RUNNING_FILE)
+        except OSError:
+            pass
+        try:
+            os.remove(_REFRESH_CANCEL_FILE)
         except OSError:
             pass
 

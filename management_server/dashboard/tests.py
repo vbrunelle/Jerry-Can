@@ -18,12 +18,14 @@ from django.utils import timezone
 from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
     _generate_csv_from_hudi,
+    cancel_inspection_refresh,
     cleanup_expired_downloads,
     generate_csv_for_user,
     get_current_prices,
     get_inspection_data,
     get_snapshot_dates,
     get_snapshots_for_date,
+    is_refresh_running,
     refresh_inspection_cache,
 )
 
@@ -943,3 +945,188 @@ class TriggerRefreshSnapshotsViewTests(TestCase):
         response = self.client.post(self.url)
         self.assertRedirects(response, reverse("inspection"))
         mock_thread_instance.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Service tests — is_refresh_running / cancel_inspection_refresh
+# ---------------------------------------------------------------------------
+class IsRefreshRunningTests(TestCase):
+    """Tests for is_refresh_running and cancel_inspection_refresh."""
+
+    def setUp(self):
+        from dashboard.services import _REFRESH_RUNNING_FILE, _REFRESH_CANCEL_FILE
+        self._running_file = _REFRESH_RUNNING_FILE
+        self._cancel_file = _REFRESH_CANCEL_FILE
+        # Clean up any stale files before each test
+        for path in (self._running_file, self._cancel_file):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def tearDown(self):
+        for path in (self._running_file, self._cancel_file):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def test_returns_false_when_no_file(self):
+        running, started_at = is_refresh_running()
+        self.assertFalse(running)
+        self.assertIsNone(started_at)
+
+    def test_returns_true_and_datetime_when_file_exists(self):
+        import time
+        ts = time.time()
+        with open(self._running_file, 'w') as f:
+            f.write(str(ts))
+        running, started_at = is_refresh_running()
+        self.assertTrue(running)
+        self.assertIsNotNone(started_at)
+        self.assertAlmostEqual(started_at.timestamp(), ts, places=0)
+
+    def test_returns_false_when_file_has_invalid_content(self):
+        with open(self._running_file, 'w') as f:
+            f.write("not-a-float")
+        running, started_at = is_refresh_running()
+        self.assertFalse(running)
+        self.assertIsNone(started_at)
+
+    def test_cancel_creates_cancel_file(self):
+        cancel_inspection_refresh()
+        self.assertTrue(os.path.exists(self._cancel_file))
+
+    def test_refresh_skips_save_when_cancelled(self):
+        """If cancel file exists when data fetch completes, cache is not saved."""
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
+            with patch("dashboard.services.get_inspection_data") as mock_get:
+                mock_get.return_value = {"summary": {}, "regions": [], "latest_prices": [], "snapshots": [], "price_variations": {}}
+                # Simulate cancel being set while data is being fetched
+                with patch("dashboard.services.os.path.exists", return_value=True):
+                    refresh_inspection_cache()
+        self.assertEqual(InspectionCache.objects.count(), 0)
+
+    def test_refresh_cleans_up_cancel_file_after_run(self):
+        """The cancel file is removed in the finally block."""
+        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
+            cancel_inspection_refresh()
+            self.assertTrue(os.path.exists(self._cancel_file))
+            refresh_inspection_cache()
+        self.assertFalse(os.path.exists(self._cancel_file))
+
+
+# ---------------------------------------------------------------------------
+# View tests — inspection_status
+# ---------------------------------------------------------------------------
+class InspectionStatusViewTests(TestCase):
+    """Tests for the inspection_status JSON view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username="testuser",
+            password="testpass123",
+            must_change_password=False,
+        )
+        self.url = reverse("inspection_status")
+
+    def test_requires_login(self):
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_returns_json_not_running(self):
+        self.client.login(username="testuser", password="testpass123")
+        with patch("dashboard.views.is_refresh_running", return_value=(False, None)):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["is_running"])
+        self.assertIsNone(data["started_at"])
+
+    def test_returns_json_running(self):
+        from datetime import datetime, timezone as tz
+        started = datetime(2024, 1, 2, 10, 30, 0, tzinfo=tz.utc)
+        self.client.login(username="testuser", password="testpass123")
+        with patch("dashboard.views.is_refresh_running", return_value=(True, started)):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["is_running"])
+        self.assertIn("2024-01-02", data["started_at"])
+
+
+# ---------------------------------------------------------------------------
+# View tests — cancel_inspection
+# ---------------------------------------------------------------------------
+class CancelInspectionViewTests(TestCase):
+    """Tests for the cancel_inspection view."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="admin",
+            password="adminpass123",
+            role="admin",
+            must_change_password=False,
+        )
+        self.normal = User.objects.create_user(
+            username="client",
+            password="clientpass123",
+            role="client",
+            must_change_password=False,
+        )
+        self.url = reverse("cancel_inspection")
+
+    def test_requires_login(self):
+        response = self.client.post(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_get_redirects_to_inspection(self):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.get(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+
+    def test_non_admin_redirected_to_home(self):
+        self.client.login(username="client", password="clientpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("home"))
+
+    @patch("dashboard.views.cancel_inspection_refresh")
+    def test_admin_can_cancel(self, mock_cancel):
+        self.client.login(username="admin", password="adminpass123")
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("inspection"))
+        mock_cancel.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# View tests — inspection view with refresh_running context
+# ---------------------------------------------------------------------------
+class InspectionViewRefreshRunningTests(TestCase):
+    """Tests that the inspection view passes refresh_running context correctly."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username="testuser",
+            password="testpass123",
+            must_change_password=False,
+        )
+        self.url = reverse("inspection")
+
+    def test_refresh_running_false_when_not_running(self):
+        self.client.login(username="testuser", password="testpass123")
+        with patch("dashboard.views.is_refresh_running", return_value=(False, None)):
+            response = self.client.get(self.url)
+        self.assertFalse(response.context["refresh_running"])
+        self.assertIsNone(response.context["refresh_started_at"])
+
+    def test_refresh_running_true_when_running(self):
+        from datetime import datetime, timezone as tz
+        started = datetime(2024, 1, 2, 10, 30, 0, tzinfo=tz.utc)
+        self.client.login(username="testuser", password="testpass123")
+        with patch("dashboard.views.is_refresh_running", return_value=(True, started)):
+            response = self.client.get(self.url)
+        self.assertTrue(response.context["refresh_running"])
+        self.assertEqual(response.context["refresh_started_at"], started)
