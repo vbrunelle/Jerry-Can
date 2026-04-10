@@ -92,7 +92,7 @@ class TestGetCommitInstantsScale:
         instants = get_commit_instants(scale_hudi_table)
         assert instants == sorted(instants), "Commit instants must be chronologically sorted"
 
-    def test_returns_exactly_30_or_more_instants(self, scale_hudi_table: str) -> None:
+    def test_returns_exactly_31_instants(self, scale_hudi_table: str) -> None:
         """With price_change_rate=0.15 and seed=42 we expect most commits to land."""
         from src.price_history import get_commit_instants
 

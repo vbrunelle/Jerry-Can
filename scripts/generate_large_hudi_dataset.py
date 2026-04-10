@@ -25,7 +25,7 @@ import random
 import shutil
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ class ScaleDatasetGenerator:
             "total_rows_written": total_rows,
             "first_commit": first_commit,
             "last_commit": last_commit,
-            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
         }
 
         # Save metadata alongside the table
