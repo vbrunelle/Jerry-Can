@@ -5,6 +5,9 @@
     <div class="row align-items-center">
         <div class="col-auto">
             <h2 class="page-title">Inspection des données</h2>
+            {% if cache_age %}
+            <small class="text-secondary">Données du {{ cache_age }}</small>
+            {% endif %}
         </div>
         {% if request.user.role == 'admin' %}
         <div class="col-auto ms-auto">
@@ -18,6 +21,15 @@
         {% endif %}
     </div>
 </div>
+
+{% if no_cache %}
+<div class="alert alert-warning mt-3">
+    Aucune donnée d'inspection disponible.
+    {% if request.user.role == 'admin' %}
+    Déclenchez un rafraîchissement via le bouton ci-dessus.
+    {% endif %}
+</div>
+{% endif %}
 
 <!-- Snapshots -->
 <div class="card mt-3">

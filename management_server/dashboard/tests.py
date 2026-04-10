@@ -294,53 +294,67 @@ class InspectionViewTests(TestCase):
         )
         self.url = reverse("inspection")
 
+    def _make_cache(self, snapshots=None, latest_prices=None, last_snapshot=None):
+        """Helper: create an InspectionCache with test data."""
+        data = {
+            'summary': {
+                'station_count': 2,
+                'price_count': 4,
+                'snapshot_count': len(snapshots or []),
+                'first_snapshot': '2024-01-01 10:00:00',
+                'last_snapshot': last_snapshot or '2024-01-02 10:00:00',
+            },
+            'regions': [],
+            'latest_prices': latest_prices or [],
+            'snapshots': snapshots or [],
+            'price_variations': {'increases': [], 'decreases': []},
+        }
+        return InspectionCache.objects.create(data=data)
+
     def test_requires_login(self):
         response = self.client.get(self.url)
         self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
 
-    def test_shows_empty_state_when_no_hudi_dir(self):
-        self.client.login(username="testuser", password="testpass123")
-        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
-            response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["snapshots"], [])
-        self.assertEqual(response.context["current_prices"], [])
-        self.assertIsNone(response.context["selected_date"])
-
-    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
-    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
-    @patch("dashboard.services.os.path.isdir", return_value=True)
-    def test_shows_snapshots_and_prices_with_data(self, *_mocks):
+    def test_shows_empty_state_when_no_cache(self):
         self.client.login(username="testuser", password="testpass123")
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertGreater(len(response.context["snapshots"]), 0)
-        self.assertGreater(len(response.context["current_prices"]), 0)
-        self.assertIsNotNone(response.context["selected_date"])
+        self.assertTrue(response.context['no_cache'])
+        self.assertEqual(response.context['snapshots'], [])
+        self.assertEqual(response.context['current_prices'], [])
+        self.assertIsNone(response.context['selected_date'])
 
-    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("price_history.get_snapshots_for_date")
-    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
-    @patch("dashboard.services.os.path.isdir", return_value=True)
-    def test_date_pagination(self, _mock_isdir, _mock_dates, mock_snaps, _mock_prices):
-        def _snaps_side(table_path, date_str):
-            if date_str == "2024-01-02":
-                return _SAMPLE_SNAPSHOTS_JAN02
-            if date_str == "2024-01-01":
-                return _SAMPLE_SNAPSHOTS_JAN01
-            return []
-        mock_snaps.side_effect = _snaps_side
+    def test_shows_snapshots_and_prices_with_data(self):
+        self._make_cache(
+            snapshots=[
+                {'fetched_at': '2024-01-02 10:00:00', 'record_count': 2, 'changes': 1},
+            ],
+            latest_prices=_SAMPLE_CURRENT_PRICES[0],
+        )
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['no_cache'])
+        self.assertGreater(len(response.context['snapshots']), 0)
+        self.assertGreater(len(response.context['current_prices']), 0)
+        self.assertIsNotNone(response.context['selected_date'])
 
+    def test_date_pagination(self):
+        self._make_cache(
+            snapshots=[
+                {'fetched_at': '2024-01-02 10:00:00', 'record_count': 2, 'changes': 1},
+                {'fetched_at': '2024-01-01 10:00:00', 'record_count': 2, 'changes': 2},
+            ],
+        )
         self.client.login(username="testuser", password="testpass123")
         # Default: most recent date
         response = self.client.get(self.url)
-        self.assertEqual(response.context["selected_date"], "2024-01-02")
+        self.assertEqual(response.context['selected_date'], '2024-01-02')
         # Navigate to older date
-        response = self.client.get(self.url + "?date=2024-01-01")
-        self.assertEqual(response.context["selected_date"], "2024-01-01")
-        self.assertEqual(response.context["next_date"], "2024-01-02")
-        self.assertIsNone(response.context["prev_date"])
+        response = self.client.get(self.url + '?date=2024-01-01')
+        self.assertEqual(response.context['selected_date'], '2024-01-01')
+        self.assertEqual(response.context['next_date'], '2024-01-02')
+        self.assertIsNone(response.context['prev_date'])
 
 
 # ---------------------------------------------------------------------------
@@ -783,18 +797,36 @@ class InspectionViewNoDatabaseTests(TestCase):
         )
         self.url = reverse("inspection")
 
-    def test_renders_ok_with_nonexistent_hudi_dir(self):
-        self.client.login(username="testuser", password="testpass123")
-        with patch("dashboard.services.HUDI_TABLE_PATH", "/nonexistent/hudi"):
-            response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["all_dates"], [])
+    def _make_cache(self, snapshots=None, latest_prices=None):
+        data = {
+            'summary': {
+                'station_count': 2,
+                'price_count': 4,
+                'snapshot_count': len(snapshots or []),
+                'first_snapshot': '2024-01-01 10:00:00',
+                'last_snapshot': '2024-01-02 10:00:00',
+            },
+            'regions': [],
+            'latest_prices': latest_prices or [],
+            'snapshots': snapshots or [],
+            'price_variations': {'increases': [], 'decreases': []},
+        }
+        return InspectionCache.objects.create(data=data)
 
-    @patch("price_history.get_current_prices", return_value=_SAMPLE_CURRENT_PRICES)
-    @patch("price_history.get_snapshots_for_date", return_value=_SAMPLE_SNAPSHOTS_JAN02)
-    @patch("price_history.get_snapshot_dates", return_value=_SAMPLE_SNAPSHOT_DATES)
-    @patch("dashboard.services.os.path.isdir", return_value=True)
-    def test_invalid_date_param_falls_back_to_latest(self, *_mocks):
+    def test_renders_ok_with_no_cache(self):
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['all_dates'], [])
+        self.assertTrue(response.context['no_cache'])
+
+    def test_invalid_date_param_falls_back_to_latest(self):
+        self._make_cache(
+            snapshots=[
+                {'fetched_at': '2024-01-02 10:00:00', 'record_count': 2, 'changes': 1},
+                {'fetched_at': '2024-01-01 10:00:00', 'record_count': 2, 'changes': 2},
+            ],
+        )
         self.client.login(username="testuser", password="testpass123")
         response = self.client.get(self.url + "?date=9999-12-31")
         self.assertEqual(response.context["selected_date"], "2024-01-02")
