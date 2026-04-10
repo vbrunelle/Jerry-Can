@@ -162,7 +162,6 @@ _REFRESH_CANCEL_FILE = '/tmp/refresh_cache_cancel'
 
 def is_refresh_running():
     """Return (is_running, started_at) where started_at is a UTC datetime or None."""
-    import time as _time
     from datetime import datetime, timezone as _tz
     try:
         with open(_REFRESH_RUNNING_FILE) as f:
