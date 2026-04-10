@@ -1,59 +1,36 @@
-"""Tests for new price_history dashboard helper functions."""
+"""Tests for price_history dashboard helper functions."""
 
+import os
 import tempfile
 from pathlib import Path
 
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from src.price_history import (
-    get_current_prices,
-    get_inspection_data,
     get_snapshot_dates,
     get_snapshots_data,
-    get_snapshots_for_date,
 )
 
 
 # ---------------------------------------------------------------------------
-# Fixture: minimal Hudi-like Parquet table on disk
+# Fixture: minimal Hudi-like table with .hoodie/ timeline on disk
 # ---------------------------------------------------------------------------
 
 
-def _write_test_parquet(table_path: str) -> None:
-    """Write a minimal set of Parquet files that mimic a Hudi table."""
-    data = {
-        "_hoodie_commit_time": [
-            "20240101100000000",
-            "20240101100000000",
-            "20240102100000000",
-            "20240102100000000",
-        ],
-        "station_id": ["ST1", "ST2", "ST1", "ST2"],
-        "fuel_type": ["regular", "regular", "regular", "regular"],
-        "station_name": ["Station A", "Station B", "Station A", "Station B"],
-        "city": ["Montréal", "Québec", "Montréal", "Québec"],
-        "region": ["Montréal", "Québec", "Montréal", "Québec"],
-        "price": [155.0, 160.0, 158.0, 157.0],
-        "fetched_at": [
-            "2024-01-01T10:00:00",
-            "2024-01-01T10:00:00",
-            "2024-01-02T10:00:00",
-            "2024-01-02T10:00:00",
-        ],
-    }
-    table = pa.table(data)
-    path = Path(table_path)
-    path.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, str(path / "part-0.parquet"))
+def _write_test_hoodie_timeline(table_path: str) -> None:
+    """Write minimal ``.hoodie/`` commit files that mimic a Hudi timeline."""
+    hoodie_dir = Path(table_path) / ".hoodie"
+    hoodie_dir.mkdir(parents=True, exist_ok=True)
+    # Two distinct commit instants on two different dates
+    (hoodie_dir / "20240101100000000.commit").touch()
+    (hoodie_dir / "20240102100000000.commit").touch()
 
 
 @pytest.fixture()
 def hudi_table(tmp_path: Path) -> str:
     table_path = str(tmp_path / "fuel_prices")
-    _write_test_parquet(table_path)
+    _write_test_hoodie_timeline(table_path)
     return table_path
 
 
@@ -65,7 +42,7 @@ def empty_table(tmp_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_snapshot_dates
+# Tests: get_snapshot_dates  (filesystem-only, no Spark)
 # ---------------------------------------------------------------------------
 
 
@@ -78,35 +55,60 @@ class TestGetSnapshotDates:
         dates = get_snapshot_dates(empty_table)
         assert dates == []
 
+    def test_returns_empty_for_nonexistent_path(self, tmp_path: Path) -> None:
+        dates = get_snapshot_dates(str(tmp_path / "nonexistent"))
+        assert dates == []
+
+    def test_ignores_non_commit_files(self, tmp_path: Path) -> None:
+        table_path = str(tmp_path / "table")
+        hoodie_dir = Path(table_path) / ".hoodie"
+        hoodie_dir.mkdir(parents=True)
+        (hoodie_dir / "20240101100000000.commit").touch()
+        (hoodie_dir / "somefile.json").touch()
+        (hoodie_dir / "20240102100000000.deltacommit").touch()
+        dates = get_snapshot_dates(table_path)
+        assert dates == ["2024-01-02", "2024-01-01"]
+
+    def test_deduplicates_same_date(self, tmp_path: Path) -> None:
+        table_path = str(tmp_path / "table")
+        hoodie_dir = Path(table_path) / ".hoodie"
+        hoodie_dir.mkdir(parents=True)
+        (hoodie_dir / "20240101100000000.commit").touch()
+        (hoodie_dir / "20240101120000000.commit").touch()
+        dates = get_snapshot_dates(table_path)
+        assert dates == ["2024-01-01"]
+
 
 # ---------------------------------------------------------------------------
-# Tests: get_snapshots_for_date
+# Integration tests: Spark-dependent functions
+# (skipped in unit test runs — require a real Hudi+Spark setup)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestGetSnapshotsForDate:
     def test_returns_snapshots_for_date(self, hudi_table: str) -> None:
+        from src.price_history import get_snapshots_for_date
         snaps = get_snapshots_for_date(hudi_table, "2024-01-01")
         assert len(snaps) == 1
         assert snaps[0]["record_count"] == 2
         assert "2024-01-01" in snaps[0]["fetched_at"]
 
     def test_returns_empty_for_missing_date(self, hudi_table: str) -> None:
+        from src.price_history import get_snapshots_for_date
         snaps = get_snapshots_for_date(hudi_table, "2099-01-01")
         assert snaps == []
 
     def test_returns_empty_for_empty_table(self, empty_table: str) -> None:
+        from src.price_history import get_snapshots_for_date
         snaps = get_snapshots_for_date(empty_table, "2024-01-01")
         assert snaps == []
 
 
-# ---------------------------------------------------------------------------
-# Tests: get_current_prices
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.integration
 class TestGetCurrentPrices:
     def test_returns_latest_prices(self, hudi_table: str) -> None:
+        from src.price_history import get_current_prices
         prices, ts = get_current_prices(hudi_table)
         assert len(prices) == 2
         assert ts is not None
@@ -116,18 +118,16 @@ class TestGetCurrentPrices:
         assert "Station B" in names
 
     def test_returns_empty_for_empty_table(self, empty_table: str) -> None:
+        from src.price_history import get_current_prices
         prices, ts = get_current_prices(empty_table)
         assert prices == []
         assert ts is None
 
 
-# ---------------------------------------------------------------------------
-# Tests: get_inspection_data
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.integration
 class TestGetInspectionData:
     def test_returns_proper_structure(self, hudi_table: str) -> None:
+        from src.price_history import get_inspection_data
         data = get_inspection_data(hudi_table)
         assert data["summary"]["station_count"] == 2
         assert data["summary"]["price_count"] == 4
@@ -140,6 +140,7 @@ class TestGetInspectionData:
         assert "decreases" in data["price_variations"]
 
     def test_returns_empty_for_empty_table(self, empty_table: str) -> None:
+        from src.price_history import get_inspection_data
         data = get_inspection_data(empty_table)
         assert data["summary"]["station_count"] == 0
         assert data["summary"]["price_count"] == 0
@@ -148,11 +149,7 @@ class TestGetInspectionData:
         assert data["snapshots"] == []
 
 
-# ---------------------------------------------------------------------------
-# Tests: get_snapshots_data (existing function — regression)
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.integration
 class TestGetSnapshotsData:
     def test_returns_snapshots(self, hudi_table: str) -> None:
         snaps = get_snapshots_data(hudi_table)
@@ -165,3 +162,16 @@ class TestGetSnapshotsData:
     def test_returns_empty_for_empty_table(self, empty_table: str) -> None:
         snaps = get_snapshots_data(empty_table)
         assert snaps == []
+
+
+@pytest.mark.integration
+class TestBuildHistoricizedChangesSpark:
+    def test_returns_dataframe(self, hudi_table: str) -> None:
+        from src.price_history import build_historicized_changes_spark
+        df = build_historicized_changes_spark(hudi_table)
+        assert isinstance(df, pd.DataFrame)
+
+    def test_pandas_alias_calls_spark(self, hudi_table: str) -> None:
+        from src.price_history import build_historicized_changes_pandas
+        df = build_historicized_changes_pandas(hudi_table)
+        assert isinstance(df, pd.DataFrame)

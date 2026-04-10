@@ -9,12 +9,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from dashboard.forms import SiteConfigurationForm
-from dashboard.models import DownloadRequest, SiteConfiguration
+from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
 from dashboard.services import (
     generate_csv_for_user,
-    get_current_prices,
-    get_snapshot_dates,
-    get_snapshots_for_date,
     refresh_inspection_cache,
     refresh_snapshots,
 )
@@ -62,13 +59,38 @@ def _next_cron_run():
 
 @login_required
 def inspection(request):
-    # --- Snapshot dates & pagination ---
-    all_dates = get_snapshot_dates()
+    cache = InspectionCache.objects.order_by('-created_at').first()
+
+    if cache is None:
+        return render(request, 'dashboard/inspection.html', {
+            'all_dates': [],
+            'selected_date': None,
+            'snapshots': [],
+            'prev_date': None,
+            'next_date': None,
+            'current_prices': [],
+            'prices_snapshot_ts': None,
+            'cache_age': None,
+            'no_cache': True,
+        })
+
+    data = cache.data
+
+    # Derive distinct dates from the cached snapshot list
+    all_dates = sorted(
+        {s['fetched_at'][:10] for s in data.get('snapshots', [])},
+        reverse=True,
+    )
+
     selected_date = request.GET.get('date')
     if selected_date not in all_dates:
         selected_date = all_dates[0] if all_dates else None
 
-    snapshots = get_snapshots_for_date(selected_date) if selected_date else []
+    # Filter snapshots for the selected date
+    snapshots = [
+        s for s in data.get('snapshots', [])
+        if s['fetched_at'][:10] == selected_date
+    ] if selected_date else []
 
     # Prev / next date navigation
     prev_date = None
@@ -80,8 +102,8 @@ def inspection(request):
         if idx < len(all_dates) - 1:
             prev_date = all_dates[idx + 1]  # older
 
-    # --- Current prices ---
-    current_prices, prices_snapshot_ts = get_current_prices()
+    current_prices = data.get('latest_prices', [])
+    prices_snapshot_ts = data.get('summary', {}).get('last_snapshot')
 
     context = {
         'all_dates': all_dates,
@@ -91,6 +113,8 @@ def inspection(request):
         'next_date': next_date,
         'current_prices': current_prices,
         'prices_snapshot_ts': prices_snapshot_ts,
+        'cache_age': cache.created_at,
+        'no_cache': False,
     }
     return render(request, 'dashboard/inspection.html', context)
 
