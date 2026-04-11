@@ -5,16 +5,17 @@
      ════════════════════════════════════════════════════════════ */
 
   /* ── Structural rules absorbed from pivot.css ── */
-  .pvtUi td { padding: 4px; }
-  .pvtAxisContainer ul, .pvtVals ul { margin: 0; padding: 0; list-style-type: none; }
-  .pvtAxisContainer li, .pvtVals li { cursor: move; padding: 2px 4px; }
+  .pvtUi td { padding: 3px; }
+  .pvtAxisContainer ul, .pvtVals ul { margin: 0; padding: 0; list-style: none; }
+  .pvtAxisContainer li, .pvtVals li { list-style: none; cursor: move; padding: 1px 3px; }
   .pvtHorizList li { display: inline; }
   .pvtVertList  li { display: block; }
   .pvtFilteredAttribute { font-style: italic; opacity: 0.7; }
-  .pvtAggregator { margin-bottom: 5px; }
+  .pvtAggregator { margin-bottom: 3px; }
   .pvtAxisLabel { width: 10px; text-align: center; }
   .pvtVals { text-align: center; }
-  .pvtRows { vertical-align: top; }
+  /* Keep the rows-axis cell top-aligned and as narrow as its content */
+  .pvtRows { vertical-align: top !important; width: 1%; }
   .pvtCheckContainer { text-align: left; overflow-y: auto; height: 200px; }
   .pvtCheckContainer p { margin: 2px; }
 
@@ -24,7 +25,7 @@
     font-size: 0.875rem;
     color: var(--tblr-body-color, #1d273b);
     border-collapse: separate;
-    border-spacing: 6px;
+    border-spacing: 4px;
   }
 
   /* ── Renderer & aggregator selects ── */
@@ -75,9 +76,9 @@
     background: var(--tblr-bg-surface, #fff);
     border: 1px solid var(--tblr-border-color, #e6e7e9);
     border-radius: var(--tblr-border-radius, 4px);
-    padding: 6px 8px;
+    padding: 4px 6px;
     min-width: 20px;
-    min-height: 36px;
+    min-height: 30px;
     vertical-align: top;
     white-space: nowrap;
   }
