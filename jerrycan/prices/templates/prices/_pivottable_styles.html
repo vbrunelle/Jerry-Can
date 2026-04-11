@@ -173,13 +173,13 @@
   /* ── Pivot table ── */
   table.pvtTable {
     border-collapse: collapse;
-    width: 100%;
+    width: auto;
     font-family: var(--tblr-font-sans-serif, inherit);
     font-size: 0.875rem;
     color: var(--tblr-body-color, #1d273b);
   }
 
-  /* Span header row (e.g. "FUEL") */
+  /* Span header row (e.g. "FUEL") and column value headers (DIESEL, RÉGULIER…) — stay on one line */
   table.pvtTable thead tr th {
     background: var(--tblr-bg-surface-secondary, #f6f8fb);
     border-bottom: 2px solid var(--tblr-border-color, #e6e7e9);
@@ -192,9 +192,11 @@
     letter-spacing: .05em;
     vertical-align: bottom;
     white-space: nowrap;
+    width: 80px;
+    text-align: right;
   }
 
-  /* Row header cells (dimension labels) */
+  /* Row header cells (dimension labels) — wrap allowed, capped width */
   table.pvtTable tbody tr th,
   table.pvtTable .pvtRowLabel,
   table.pvtTable .pvtColLabel {
@@ -207,7 +209,9 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: .05em;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: break-word;
+    max-width: 160px;
     text-align: left;
   }
 
@@ -225,18 +229,22 @@
     background: var(--tblr-table-hover-bg, #edf2fb);
   }
 
-  /* Value cells */
+  /* Value cells — fixed compact width, right-aligned */
   table.pvtTable .pvtVal {
     text-align: right;
     font-variant-numeric: tabular-nums;
+    width: 80px;
+    white-space: nowrap;
   }
 
-  /* Subtotal & grand total */
+  /* Subtotal & grand total — same width */
   table.pvtTable .pvtTotal,
   table.pvtTable .pvtGrandTotal {
     text-align: right;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
+    width: 80px;
+    white-space: nowrap;
     background: var(--tblr-bg-surface-secondary, #f6f8fb);
     color: var(--tblr-body-color, #1d273b);
     border-top: 2px solid var(--tblr-border-color, #e6e7e9);
