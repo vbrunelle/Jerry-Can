@@ -42,6 +42,13 @@
     border-radius: var(--tblr-border-radius, 4px);
     cursor: pointer;
   }
+  /* Aggregator select has long options ("Sample Standard Deviation", etc.) — cap its width.
+     The native dropdown when open still renders options at full width in all browsers. */
+  select.pvtAggregator {
+    max-width: 130px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
   .pvtUi select:focus {
     outline: none;
     border-color: var(--tblr-primary, #206bc4);
