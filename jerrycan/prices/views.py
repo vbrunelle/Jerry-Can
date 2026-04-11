@@ -84,9 +84,17 @@ class JerryCanPasswordChangeView(PasswordChangeView):
 def force_snapshot(request, pk):
     analysis = get_object_or_404(Analysis, pk=pk)
     if request.method == 'POST':
-        data = analysis._fetch_data()
-        snapshot = Snapshot.objects.create(analysis=analysis)
-        snapshot.populate(data)
+        snapshot = Snapshot.objects.create(analysis=analysis, status=Snapshot.Status.DOWNLOADING)
+        try:
+            data = analysis._fetch_data()
+            snapshot.status = Snapshot.Status.PROCESSING
+            snapshot.save(update_fields=['status'])
+            snapshot.populate(data)
+            snapshot.status = Snapshot.Status.PROCESSED
+            snapshot.save(update_fields=['status'])
+        except Exception:
+            snapshot.status = Snapshot.Status.ERROR
+            snapshot.save(update_fields=['status'])
     return redirect('prices:analysis_detail', pk=pk)
 
 

@@ -22,3 +22,13 @@ def _random_username():
 
 class PricesConfig(AppConfig):
     name = 'prices'
+
+    def ready(self):
+        import sys
+        # Only start background threads when actually running the development server.
+        # Excluded: migrate, shell, test, and any other management commands.
+        if 'runserver' not in sys.argv:
+            return
+        from .models import Analysis
+        for analysis in Analysis.objects.filter(active=True, run_automatically=True):
+            analysis.run_analysis()

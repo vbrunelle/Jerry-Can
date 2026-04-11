@@ -113,3 +113,26 @@ class TestPopulate(TestCase):
         self.snapshot.populate(data)
         snapshot2.populate(data)
         self.assertEqual(Station.objects.filter(name="Same Station").count(), 1)
+
+    # --- Snapshot status ---------------------------------------------------
+
+    def test_new_snapshot_default_status_is_downloading(self):
+        snap = Snapshot.objects.create(analysis=self.analysis)
+        self.assertEqual(snap.status, Snapshot.Status.DOWNLOADING)
+
+    def test_status_choices_exist(self):
+        expected = {'downloading', 'processing', 'processed', 'error'}
+        actual = {choice[0] for choice in Snapshot.Status.choices}
+        self.assertEqual(actual, expected)
+
+    def test_snapshot_status_can_be_set_to_processed(self):
+        snap = Snapshot.objects.create(analysis=self.analysis, status=Snapshot.Status.PROCESSED)
+        snap.refresh_from_db()
+        self.assertEqual(snap.status, Snapshot.Status.PROCESSED)
+
+    def test_snapshot_status_can_be_set_to_error(self):
+        snap = Snapshot.objects.create(analysis=self.analysis, status=Snapshot.Status.DOWNLOADING)
+        snap.status = Snapshot.Status.ERROR
+        snap.save(update_fields=['status'])
+        snap.refresh_from_db()
+        self.assertEqual(snap.status, Snapshot.Status.ERROR)

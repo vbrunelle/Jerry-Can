@@ -25,7 +25,18 @@ def create_user_profile(sender, instance, created, **kwargs):
 
 
 class Snapshot(models.Model):
+    class Status(models.TextChoices):
+        DOWNLOADING = 'downloading', 'Downloading'
+        PROCESSING  = 'processing',  'Processing'
+        PROCESSED   = 'processed',   'Processed'
+        ERROR       = 'error',       'Error'
+
     timestamp = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.DOWNLOADING,
+    )
     analysis = models.ForeignKey('Analysis', on_delete=models.CASCADE, related_name='snapshots')
 
     def populate(self, data: pd.DataFrame) -> None:
@@ -92,6 +103,10 @@ class Analysis(models.Model):
     data_source_url = models.URLField(help_text="URL of the data source to collect fuel prices from", default="https://regieessencequebec.ca/stations.geojson.gz")
     created_at = models.DateTimeField(auto_now_add=True)
     active = models.BooleanField(default=True)
+    run_automatically = models.BooleanField(
+        default=False,
+        help_text="Automatically take snapshots at the configured frequency.",
+    )
 
     @classmethod
     def get_active(cls):
@@ -99,10 +114,26 @@ class Analysis(models.Model):
         return cls.objects.filter(active=True).first()
 
     def save(self, *args, **kwargs):
-        """Ensure only one analysis is active at a time."""
+        """Ensure only one analysis is active at a time.
+        Start the background thread when run_automatically is turned on.
+        """
         if self.active:
             Analysis.objects.exclude(pk=self.pk).filter(active=True).update(active=False)
+
+        # Detect transition: run_automatically going from False → True on an existing instance.
+        start_thread = False
+        if self.pk:
+            try:
+                previous = Analysis.objects.get(pk=self.pk)
+                if not previous.run_automatically and self.run_automatically:
+                    start_thread = True
+            except Analysis.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)
+
+        if start_thread:
+            self.run_analysis()
 
 
     def run_analysis(self):
@@ -112,11 +143,40 @@ class Analysis(models.Model):
         return thread
 
     def _run_analysis(self):
-        while self.active:
-            data = self._fetch_data()
-            snapshot = Snapshot.objects.create(analysis=self)
-            snapshot.populate(data)
-            time.sleep(self.update_frequency * 60)
+        while True:
+            # Re-read from DB on every iteration to pick up field changes.
+            try:
+                analysis = Analysis.objects.get(pk=self.pk)
+            except Analysis.DoesNotExist:
+                break
+            if not analysis.run_automatically:
+                break
+
+            snapshot = Snapshot.objects.create(
+                analysis=analysis,
+                status=Snapshot.Status.DOWNLOADING,
+            )
+            try:
+                data = analysis._fetch_data()
+            except Exception:
+                snapshot.status = Snapshot.Status.ERROR
+                snapshot.save(update_fields=['status'])
+                time.sleep(analysis.update_frequency * 60)
+                continue
+
+            snapshot.status = Snapshot.Status.PROCESSING
+            snapshot.save(update_fields=['status'])
+            try:
+                snapshot.populate(data)
+            except Exception:
+                snapshot.status = Snapshot.Status.ERROR
+                snapshot.save(update_fields=['status'])
+                time.sleep(analysis.update_frequency * 60)
+                continue
+
+            snapshot.status = Snapshot.Status.PROCESSED
+            snapshot.save(update_fields=['status'])
+            time.sleep(analysis.update_frequency * 60)
 
     def _fetch_data(self):
         """Fetches the GeoJSON.gz from data_source_url and returns a flat pandas DataFrame.
