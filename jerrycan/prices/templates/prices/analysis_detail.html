@@ -3,6 +3,18 @@
 {% block nav_analysis %}active{% endblock %}
 {% block page_title %}Analysis #{{ object.pk }}{% endblock %}
 
+{% block page_actions %}
+<div class="col-auto">
+  <form method="post" action="{% url 'prices:force_snapshot' object.pk %}">
+    {% csrf_token %}
+    <button type="submit" class="btn btn-primary">
+      <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+      Force snapshot
+    </button>
+  </form>
+</div>
+{% endblock %}
+
 {% block content %}
 <div class="row row-cards">
   <div class="col-md-4">

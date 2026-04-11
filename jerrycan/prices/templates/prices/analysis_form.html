@@ -1,0 +1,54 @@
+{% extends "prices/base.html" %}
+{% block title %}New Analysis{% endblock %}
+{% block nav_analysis %}active{% endblock %}
+{% block page_title %}New Analysis{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Create analysis</h3>
+      </div>
+      <div class="card-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+
+          <div class="mb-3">
+            <label class="form-label required">Data source URL</label>
+            {{ form.data_source_url }}
+            {% if form.data_source_url.errors %}
+              <div class="invalid-feedback d-block">{{ form.data_source_url.errors.0 }}</div>
+            {% endif %}
+            <small class="form-hint">GeoJSON or GeoJSON.gz endpoint for fuel prices.</small>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label required">Update frequency</label>
+            <div class="input-group">
+              {{ form.update_frequency }}
+              <span class="input-group-text">minutes</span>
+            </div>
+            {% if form.update_frequency.errors %}
+              <div class="invalid-feedback d-block">{{ form.update_frequency.errors.0 }}</div>
+            {% endif %}
+          </div>
+
+          <div class="mb-3">
+            <label class="form-check">
+              {{ form.active }}
+              <span class="form-check-label">Set as active analysis</span>
+            </label>
+            <small class="form-hint d-block">{{ form.active.help_text }}</small>
+          </div>
+
+          <div class="form-footer">
+            <button type="submit" class="btn btn-primary">Create analysis</button>
+            <a href="{% url 'prices:analysis_list' %}" class="btn btn-link">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

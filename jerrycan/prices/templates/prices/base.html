@@ -69,6 +69,13 @@
               <a href="{% url 'login' %}" class="btn btn-sm btn-outline-primary">Sign in</a>
             {% endif %}
           </div>
+        </div>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="container-xl">
+        {% block content %}{% endblock %}
+      </div>
     </div>
   </div>
 </div>

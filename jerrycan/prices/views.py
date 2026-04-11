@@ -1,5 +1,6 @@
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils.decorators import method_decorator
 from django.views.generic import CreateView, DetailView, ListView, TemplateView
@@ -54,11 +55,23 @@ class JerryCanPasswordChangeView(PasswordChangeView):
     def form_valid(self, form):
         response = super().form_valid(form)
         try:
-            self.request.user.profile.must_change_password = False
-            self.request.user.profile.save()
+            profile = self.request.user.profile
+            profile.must_change_password = False
+            profile.temporary_password = ''
+            profile.save()
         except Exception:
             pass
         return response
+
+
+@staff_member_required
+def force_snapshot(request, pk):
+    analysis = get_object_or_404(Analysis, pk=pk)
+    if request.method == 'POST':
+        data = analysis._fetch_data()
+        snapshot = Snapshot.objects.create(analysis=analysis)
+        snapshot.populate(data)
+    return redirect('prices:analysis_detail', pk=pk)
 
 
 class ActiveAnalysisMixin:

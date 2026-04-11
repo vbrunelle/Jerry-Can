@@ -14,6 +14,8 @@ from django.dispatch import receiver
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     must_change_password = models.BooleanField(default=False)
+    # Stored in plain text only while must_change_password is True; cleared on password change.
+    temporary_password = models.CharField(max_length=64, blank=True, default='')
 
 
 @receiver(post_save, sender=User)
@@ -41,16 +43,23 @@ class Snapshot(models.Model):
                 }
             )
 
-            prices = row.get('Prices') or {}
-            for fuel_name, raw_value in prices.items():
-                if raw_value is None:
+            for entry in row.get('Prices') or []:
+                if not isinstance(entry, dict) or not entry.get('IsAvailable'):
+                    continue
+                raw_price = entry.get('Price') or ''
+                try:
+                    value = float(raw_price.replace('\xa0', '').replace('¢', '').strip())
+                except (ValueError, AttributeError):
+                    continue
+                fuel_name = entry.get('GasType', '').strip()
+                if not fuel_name:
                     continue
                 fuel, _ = Fuel.objects.get_or_create(name=fuel_name)
                 Price.objects.create(
                     station=station,
                     fuel=fuel,
                     snapshot=self,
-                    price=raw_value,
+                    price=value,
                 )
 
 class Station(models.Model):

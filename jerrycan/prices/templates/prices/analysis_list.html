@@ -3,6 +3,15 @@
 {% block nav_analysis %}active{% endblock %}
 {% block page_title %}Analyses{% endblock %}
 
+{% block page_actions %}
+<div class="col-auto">
+  <a href="{% url 'prices:analysis_create' %}" class="btn btn-primary">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+    New analysis
+  </a>
+</div>
+{% endblock %}
+
 {% block content %}
 <div class="card">
   <div class="card-header">

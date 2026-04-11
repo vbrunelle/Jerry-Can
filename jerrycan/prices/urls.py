@@ -8,7 +8,9 @@ urlpatterns = [
     path("", views.HomeView.as_view(), name="home"),
 
     path("analyses/", views.AnalysisListView.as_view(), name="analysis_list"),
+    path("analyses/new/", views.AnalysisCreateView.as_view(), name="analysis_create"),
     path("analyses/<int:pk>/", views.AnalysisDetailView.as_view(), name="analysis_detail"),
+    path("analyses/<int:pk>/snapshot/", views.force_snapshot, name="force_snapshot"),
 
     path("stations/", views.StationListView.as_view(), name="station_list"),
     path("stations/<int:pk>/", views.StationDetailView.as_view(), name="station_detail"),
