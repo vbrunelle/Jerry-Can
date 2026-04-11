@@ -15,9 +15,6 @@ urlpatterns = [
     path("stations/", views.StationListView.as_view(), name="station_list"),
     path("stations/<int:pk>/", views.StationDetailView.as_view(), name="station_detail"),
 
-    path("fuels/", views.FuelListView.as_view(), name="fuel_list"),
-    path("fuels/<int:pk>/", views.FuelDetailView.as_view(), name="fuel_detail"),
-
     path("snapshots/", views.SnapshotListView.as_view(), name="snapshot_list"),
     path("snapshots/<int:pk>/", views.SnapshotDetailView.as_view(), name="snapshot_detail"),
 

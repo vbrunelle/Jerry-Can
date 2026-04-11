@@ -22,26 +22,29 @@
   </div>
   <div class="col-md-8">
     <div class="card">
-      <div class="card-header"><h3 class="card-title">Latest prices</h3></div>
-      <div class="table-responsive">
-        <table class="table table-vcenter card-table">
-          <thead>
-            <tr><th>Fuel</th><th>Price</th><th>Snapshot</th></tr>
-          </thead>
-          <tbody>
-            {% for price in object.price_set.select_related %}
-            <tr>
-              <td>{{ price.fuel.name }}</td>
-              <td>${{ price.price }}</td>
-              <td>{{ price.snapshot.timestamp|date:"Y-m-d H:i" }}</td>
-            </tr>
-            {% empty %}
-            <tr><td colspan="3" class="text-muted text-center py-4">No prices recorded.</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <div class="card-header"><h3 class="card-title">Prices</h3></div>
+      <div class="card-body">
+        <div id="pivot-output"></div>
       </div>
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pivottable/2.23.0/pivot.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jqueryui/1.13.2/jquery-ui.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pivottable/2.23.0/pivot.min.js"></script>
+<script>
+  $(function() {
+    var data = {{ prices_json|safe }};
+    $("#pivot-output").pivotUI(data, {
+      rows: ["Snapshot"],
+      cols: ["Fuel"],
+      aggregatorName: "Average",
+      vals: ["Price"],
+    });
+  });
+</script>
 {% endblock %}

@@ -1,3 +1,5 @@
+import json
+
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
 from django.shortcuts import get_object_or_404, redirect
@@ -6,7 +8,21 @@ from django.utils.decorators import method_decorator
 from django.views.generic import CreateView, DetailView, ListView, TemplateView
 
 from .forms import AnalysisForm
-from .models import Analysis, Fuel, Price, Snapshot, Station
+from .models import Analysis, Price, Snapshot, Station
+
+
+def _prices_to_json(prices_qs):
+    return json.dumps([
+        {
+            "Station": p.station.name,
+            "City": p.station.city,
+            "Region": p.station.region,
+            "Fuel": p.fuel.name,
+            "Price": float(p.price),
+            "Snapshot": p.snapshot.timestamp.strftime("%Y-%m-%d %H:%M"),
+        }
+        for p in prices_qs
+    ])
 
 
 class HomeView(TemplateView):
@@ -101,16 +117,11 @@ class StationDetailView(DetailView):
     model = Station
     template_name = "prices/station_detail.html"
 
-
-class FuelListView(ListView):
-    model = Fuel
-    template_name = "prices/fuel_list.html"
-    ordering = ["name"]
-
-
-class FuelDetailView(DetailView):
-    model = Fuel
-    template_name = "prices/fuel_detail.html"
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        prices_qs = Price.objects.filter(station=self.object).select_related("fuel", "snapshot").order_by("-snapshot__timestamp")
+        ctx["prices_json"] = _prices_to_json(prices_qs)
+        return ctx
 
 
 class SnapshotListView(ActiveAnalysisMixin, ListView):
@@ -134,4 +145,9 @@ class PriceListView(ActiveAnalysisMixin, ListView):
 
     def _filter_by_analysis(self, qs, analysis):
         return qs.filter(snapshot__analysis=analysis).select_related("station", "fuel", "snapshot")
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx["prices_json"] = _prices_to_json(ctx["object_list"])
+        return ctx
 
