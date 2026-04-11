@@ -3,6 +3,10 @@
 {% block nav_prices %}active{% endblock %}
 {% block page_title %}Prices{% endblock %}
 
+{% block extra_head %}
+{% include "prices/_pivottable_styles.html" %}
+{% endblock %}
+
 {% block content %}
 <div class="card">
   <div class="card-body">
@@ -12,12 +16,13 @@
 {% endblock %}
 
 {% block extra_js %}
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pivottable/2.23.0/pivot.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jqueryui/1.13.2/jquery-ui.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pivottable/2.23.0/pivot.min.js"></script>
 <script>
   $(function() {
+    // Prevent jQuery UI from wrapping <select> elements — we use native selects styled with CSS
+    $.fn.selectmenu = function() { return this; };
     var data = {{ prices_json|safe }};
     $("#pivot-output").pivotUI(data, {
       rows: ["Region", "City", "Station"],

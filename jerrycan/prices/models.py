@@ -32,12 +32,16 @@ class Snapshot(models.Model):
         """Parses a DataFrame of station data and creates Station, Fuel and Price objects."""
         with transaction.atomic():
             for _, row in data.iterrows():
+                raw_address = row.get('Address', '')
+                address_parts = raw_address.rsplit(',', 1)
+                city = address_parts[1].strip() if len(address_parts) > 1 else ''
+                street = address_parts[0].strip()
                 station, _ = Station.objects.update_or_create(
                     name=row.get('Name', ''),
                     defaults={
-                        'city': row.get('city', ''),
+                        'city': city,
                         'region': row.get('Region', ''),
-                        'adress': row.get('Address', ''),
+                        'adress': street,
                         'longitude': row.get('longitude', 0.0),
                         'latitude': row.get('latitude', 0.0),
                         'analysis': self.analysis,

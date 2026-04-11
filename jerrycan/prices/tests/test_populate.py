@@ -55,10 +55,11 @@ class TestPopulate(TestCase):
 
     def test_station_fields_are_mapped(self):
         self.snapshot.populate(_make_dataframe([_make_feature(
-            name="Test Station", address="456 av. Test", region="Laurentides"
+            name="Test Station", address="456 av. Test, Laval", region="Laurentides"
         )]))
         station = Station.objects.get(name="Test Station")
         self.assertEqual(station.adress, "456 av. Test")
+        self.assertEqual(station.city, "Laval")
         self.assertEqual(station.region, "Laurentides")
         self.assertAlmostEqual(station.longitude, -73.56)
         self.assertAlmostEqual(station.latitude, 45.50)

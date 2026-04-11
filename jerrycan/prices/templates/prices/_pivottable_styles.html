@@ -1,0 +1,168 @@
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pivottable/2.23.0/pivot.min.css"/>
+<style>
+  /* ── Reset jQuery UI widget chrome ── */
+  .ui-widget { font-family: inherit !important; font-size: 0.875rem !important; }
+  .ui-widget-content { border: none !important; background: none !important; }
+  .ui-state-default, .ui-widget-content .ui-state-default {
+    border: none !important; background: none !important; color: inherit !important;
+  }
+
+  /* ── Main container ── */
+  .pvtUi {
+    font-family: inherit;
+    font-size: 0.875rem;
+    color: var(--tblr-body-color, #1d273b);
+    border-collapse: separate;
+    border-spacing: 6px;
+  }
+
+  /* ── Renderer & aggregator selects ── */
+  .pvtUi select {
+    appearance: none;
+    display: inline-block;
+    width: auto;
+    padding: 0.3rem 2rem 0.3rem 0.6rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    color: var(--tblr-body-color, #1d273b);
+    background: #fff url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23626976' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e") no-repeat right 0.5rem center/14px 10px;
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    cursor: pointer;
+  }
+  .pvtUi select:focus {
+    outline: none;
+    border-color: var(--tblr-primary, #206bc4);
+    box-shadow: 0 0 0 0.2rem rgba(32,107,196,.15);
+  }
+
+  /* ── Sort order buttons (↕ ⇄) ── */
+  .pvtRowOrder, .pvtColOrder {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    color: var(--tblr-secondary, #626976);
+    background: #fff;
+    user-select: none;
+  }
+  .pvtRowOrder:hover, .pvtColOrder:hover {
+    color: var(--tblr-primary, #206bc4);
+    border-color: var(--tblr-primary, #206bc4);
+  }
+
+  /* ── Drag-and-drop zones ── */
+  .pvtAxisContainer, .pvtVals {
+    background: var(--tblr-card-bg, #fff);
+    border: 1px solid var(--tblr-border-color, #e6e7e9) !important;
+    border-radius: var(--tblr-border-radius, 4px);
+    padding: 6px 8px;
+    min-height: 36px;
+    vertical-align: top;
+  }
+  .pvtAxisContainer li { list-style: none; }
+
+  /* ── Unused fields zone ── */
+  .pvtUnused { background: var(--tblr-light, #f6f8fb) !important; }
+
+  /* ── Attribute chips ── */
+  .pvtAttr {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--tblr-primary-lt, #e8f0fe);
+    color: var(--tblr-primary, #206bc4);
+    border: 1px solid var(--tblr-primary, #206bc4);
+    border-radius: calc(var(--tblr-border-radius, 4px) - 1px);
+    padding: 2px 8px;
+    font-size: 0.8125rem;
+    cursor: grab;
+    white-space: nowrap;
+  }
+  .pvtAttr:hover { background: var(--tblr-primary, #206bc4); color: #fff; }
+
+  /* ── Filter triangle button inside chip ── */
+  .pvtTriangle {
+    font-size: 0.65rem;
+    color: var(--tblr-primary, #206bc4);
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  .pvtAttr:hover .pvtTriangle { color: #fff; opacity: 1; }
+
+  /* ── Filter popup ── */
+  .pvtFilterBox {
+    background: #fff !important;
+    border: 1px solid var(--tblr-border-color, #e6e7e9) !important;
+    border-radius: var(--tblr-border-radius, 4px) !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,.1) !important;
+    padding: 8px !important;
+    font-size: 0.875rem;
+  }
+  .pvtFilterBox input[type=text] {
+    width: 100%;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.875rem;
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    margin-bottom: 6px;
+  }
+  .pvtFilterBox input[type=text]:focus {
+    outline: none;
+    border-color: var(--tblr-primary, #206bc4);
+    box-shadow: 0 0 0 0.2rem rgba(32,107,196,.15);
+  }
+  .pvtButton {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--tblr-primary, #206bc4);
+    background: #fff;
+    border: 1px solid var(--tblr-primary, #206bc4);
+    border-radius: var(--tblr-border-radius, 4px);
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  .pvtButton:hover {
+    background: var(--tblr-primary, #206bc4);
+    color: #fff;
+  }
+
+  /* ── Pivot table ── */
+  .pvtTable { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+  .pvtTable thead tr th {
+    background: var(--tblr-table-header-bg, #f6f8fb);
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    padding: 6px 12px;
+    font-weight: 600;
+    color: var(--tblr-secondary, #626976);
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: .04em;
+  }
+  .pvtTable tbody tr td {
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    padding: 6px 12px;
+  }
+  .pvtTable tbody tr:nth-child(even) td { background: var(--tblr-table-striped-bg, #f6f8fb); }
+  .pvtTable tbody tr:hover td { background: var(--tblr-table-hover-bg, #edf2fb); }
+
+  .pvtRowLabel, .pvtColLabel {
+    background: var(--tblr-table-header-bg, #f6f8fb);
+    font-weight: 600;
+  }
+  .pvtTotal, .pvtGrandTotal {
+    font-weight: 600;
+    background: var(--tblr-table-header-bg, #f6f8fb) !important;
+    color: var(--tblr-body-color, #1d273b);
+  }
+  .pvtVal { text-align: right; }
+</style>

@@ -3,6 +3,10 @@
 {% block nav_stations %}active{% endblock %}
 {% block page_title %}{{ object.name }}{% endblock %}
 
+{% block extra_head %}
+{% include "prices/_pivottable_styles.html" %}
+{% endblock %}
+
 {% block content %}
 <div class="row row-cards">
   <div class="col-md-4">
@@ -39,6 +43,7 @@
 <script>
   $(function() {
     var data = {{ prices_json|safe }};
+    $.fn.selectmenu = function() { return this; };
     $("#pivot-output").pivotUI(data, {
       rows: ["Snapshot"],
       cols: ["Fuel"],
