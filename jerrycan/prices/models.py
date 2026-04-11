@@ -6,7 +6,7 @@ import time
 import pandas as pd
 import requests
 from django.contrib.auth.models import User
-from django.db import models
+from django.db import models, transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
@@ -30,37 +30,38 @@ class Snapshot(models.Model):
 
     def populate(self, data: pd.DataFrame) -> None:
         """Parses a DataFrame of station data and creates Station, Fuel and Price objects."""
-        for _, row in data.iterrows():
-            station, _ = Station.objects.update_or_create(
-                name=row.get('Name', ''),
-                defaults={
-                    'city': row.get('city', ''),
-                    'region': row.get('Region', ''),
-                    'adress': row.get('Address', ''),
-                    'longitude': row.get('longitude', 0.0),
-                    'latitude': row.get('latitude', 0.0),
-                    'analysis': self.analysis,
-                }
-            )
-
-            for entry in row.get('Prices') or []:
-                if not isinstance(entry, dict) or not entry.get('IsAvailable'):
-                    continue
-                raw_price = entry.get('Price') or ''
-                try:
-                    value = float(raw_price.replace('\xa0', '').replace('¢', '').strip())
-                except (ValueError, AttributeError):
-                    continue
-                fuel_name = entry.get('GasType', '').strip()
-                if not fuel_name:
-                    continue
-                fuel, _ = Fuel.objects.get_or_create(name=fuel_name)
-                Price.objects.create(
-                    station=station,
-                    fuel=fuel,
-                    snapshot=self,
-                    price=value,
+        with transaction.atomic():
+            for _, row in data.iterrows():
+                station, _ = Station.objects.update_or_create(
+                    name=row.get('Name', ''),
+                    defaults={
+                        'city': row.get('city', ''),
+                        'region': row.get('Region', ''),
+                        'adress': row.get('Address', ''),
+                        'longitude': row.get('longitude', 0.0),
+                        'latitude': row.get('latitude', 0.0),
+                        'analysis': self.analysis,
+                    }
                 )
+
+                for entry in row.get('Prices') or []:
+                    if not isinstance(entry, dict) or not entry.get('IsAvailable'):
+                        continue
+                    raw_price = entry.get('Price') or ''
+                    try:
+                        value = float(raw_price.replace('\xa0', '').replace('¢', '').strip())
+                    except (ValueError, AttributeError):
+                        continue
+                    fuel_name = entry.get('GasType', '').strip()
+                    if not fuel_name:
+                        continue
+                    fuel, _ = Fuel.objects.get_or_create(name=fuel_name)
+                    Price.objects.create(
+                        station=station,
+                        fuel=fuel,
+                        snapshot=self,
+                        price=value,
+                    )
 
 class Station(models.Model):
     name = models.CharField(max_length=255)
@@ -79,7 +80,7 @@ class Price(models.Model):
     station = models.ForeignKey(Station, on_delete=models.CASCADE)
     fuel = models.ForeignKey(Fuel, on_delete=models.CASCADE)
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    snapshot = models.ForeignKey(Snapshot, on_delete=models.CASCADE)
+    snapshot = models.ForeignKey(Snapshot, on_delete=models.CASCADE, related_name='prices')
 
 
 class Analysis(models.Model):
