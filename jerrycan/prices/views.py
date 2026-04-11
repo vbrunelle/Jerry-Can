@@ -5,7 +5,7 @@ from django.contrib.auth.views import PasswordChangeView
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils.decorators import method_decorator
-from django.views.generic import CreateView, DetailView, ListView, TemplateView
+from django.views.generic import CreateView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import AnalysisForm
 from .models import Analysis, Price, Snapshot, Station
@@ -62,6 +62,16 @@ class AnalysisCreateView(CreateView):
     form_class = AnalysisForm
     template_name = "prices/analysis_form.html"
     success_url = reverse_lazy("prices:analysis_list")
+
+
+@method_decorator(staff_member_required, name="dispatch")
+class AnalysisUpdateView(UpdateView):
+    model = Analysis
+    form_class = AnalysisForm
+    template_name = "prices/analysis_form.html"
+
+    def get_success_url(self):
+        return reverse_lazy("prices:analysis_detail", kwargs={"pk": self.object.pk})
 
 
 class JerryCanPasswordChangeView(PasswordChangeView):

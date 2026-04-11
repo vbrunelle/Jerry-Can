@@ -1,14 +1,14 @@
 {% extends "prices/base.html" %}
-{% block title %}New Analysis{% endblock %}
+{% block title %}{% if form.instance.pk %}Edit Analysis #{{ form.instance.pk }}{% else %}New Analysis{% endif %}{% endblock %}
 {% block nav_analysis %}active{% endblock %}
-{% block page_title %}New Analysis{% endblock %}
+{% block page_title %}{% if form.instance.pk %}Edit Analysis #{{ form.instance.pk }}{% else %}New Analysis{% endif %}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8">
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title">Create analysis</h3>
+        <h3 class="card-title">{% if form.instance.pk %}Edit analysis{% else %}Create analysis{% endif %}</h3>
       </div>
       <div class="card-body">
         <form method="post" novalidate>
@@ -42,9 +42,21 @@
             <small class="form-hint d-block">{{ form.active.help_text }}</small>
           </div>
 
+          <div class="mb-3">
+            <label class="form-check">
+              {{ form.run_automatically }}
+              <span class="form-check-label">Run automatically</span>
+            </label>
+            <small class="form-hint d-block">{{ form.run_automatically.help_text }}</small>
+          </div>
+
           <div class="form-footer">
-            <button type="submit" class="btn btn-primary">Create analysis</button>
+            <button type="submit" class="btn btn-primary">{% if form.instance.pk %}Save changes{% else %}Create analysis{% endif %}</button>
+            {% if form.instance.pk %}
+            <a href="{% url 'prices:analysis_detail' form.instance.pk %}" class="btn btn-link">Cancel</a>
+            {% else %}
             <a href="{% url 'prices:analysis_list' %}" class="btn btn-link">Cancel</a>
+            {% endif %}
           </div>
         </form>
       </div>

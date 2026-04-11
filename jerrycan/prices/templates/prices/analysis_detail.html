@@ -5,6 +5,12 @@
 
 {% block page_actions %}
 <div class="col-auto">
+  <a href="{% url 'prices:analysis_edit' object.pk %}" class="btn btn-outline-secondary">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1"/><path d="M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3l8.385 -8.415z"/><path d="M16 5l3 3"/></svg>
+    Edit
+  </a>
+</div>
+<div class="col-auto">
   <form method="post" action="{% url 'prices:force_snapshot' object.pk %}">
     {% csrf_token %}
     <button type="submit" class="btn btn-primary">
@@ -28,6 +34,8 @@
           <dd class="col-7">{{ object.update_frequency }} min</dd>
           <dt class="col-5">Status</dt>
           <dd class="col-7">{% if object.active %}<span class="badge bg-success-lt">Active</span>{% else %}<span class="badge bg-secondary-lt">Inactive</span>{% endif %}</dd>
+          <dt class="col-5">Auto snapshots</dt>
+          <dd class="col-7">{% if object.run_automatically %}<span class="badge bg-azure-lt">Automatic</span>{% else %}<span class="badge bg-secondary-lt">Manual</span>{% endif %}</dd>
           <dt class="col-5">Created</dt>
           <dd class="col-7">{{ object.created_at|date:"Y-m-d H:i" }}</dd>
         </dl>
@@ -40,18 +48,25 @@
       <div class="table-responsive">
         <table class="table table-vcenter card-table">
           <thead>
-            <tr><th>#</th><th>Timestamp</th><th>Prices</th><th></th></tr>
+            <tr><th>#</th><th>Timestamp</th><th>Status</th><th>Prices</th><th></th></tr>
           </thead>
           <tbody>
             {% for snapshot in object.snapshots.all %}
             <tr>
               <td>{{ snapshot.pk }}</td>
               <td>{{ snapshot.timestamp|date:"Y-m-d H:i:s" }}</td>
+              <td>
+                {% if snapshot.status == 'processed' %}<span class="badge bg-success-lt">Processed</span>
+                {% elif snapshot.status == 'processing' %}<span class="badge bg-warning-lt">Processing</span>
+                {% elif snapshot.status == 'downloading' %}<span class="badge bg-info-lt">Downloading</span>
+                {% elif snapshot.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
+                {% else %}<span class="badge bg-secondary-lt">{{ snapshot.status }}</span>{% endif %}
+              </td>
               <td>{{ snapshot.prices.count }}</td>
               <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
             </tr>
             {% empty %}
-            <tr><td colspan="4" class="text-muted text-center py-4">No snapshots yet.</td></tr>
+            <tr><td colspan="5" class="text-muted text-center py-4">No snapshots yet.</td></tr>
             {% endfor %}
           </tbody>
         </table>

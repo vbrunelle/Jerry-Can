@@ -9,6 +9,14 @@
     <dl class="row mb-0">
       <dt class="col-3">Timestamp</dt><dd class="col-9">{{ object.timestamp|date:"Y-m-d H:i:s" }}</dd>
       <dt class="col-3">Analysis</dt><dd class="col-9"><a href="{% url 'prices:analysis_detail' object.analysis.pk %}">#{{ object.analysis.pk }}</a></dd>
+      <dt class="col-3">Status</dt>
+      <dd class="col-9">
+        {% if object.status == 'processed' %}<span class="badge bg-success-lt">Processed</span>
+        {% elif object.status == 'processing' %}<span class="badge bg-warning-lt">Processing</span>
+        {% elif object.status == 'downloading' %}<span class="badge bg-info-lt">Downloading</span>
+        {% elif object.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
+        {% else %}<span class="badge bg-secondary-lt">{{ object.status }}</span>{% endif %}
+      </dd>
     </dl>
   </div>
 </div>
