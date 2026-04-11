@@ -120,7 +120,10 @@ class Analysis(models.Model):
         if self.active:
             Analysis.objects.exclude(pk=self.pk).filter(active=True).update(active=False)
 
-        # Detect transition: run_automatically going from False → True on an existing instance.
+        # Start thread when run_automatically is True and wasn't before.
+        # Covers two cases:
+        #   - New object created with run_automatically=True (self.pk is None)
+        #   - Existing object updated from False → True
         start_thread = False
         if self.pk:
             try:
@@ -129,6 +132,9 @@ class Analysis(models.Model):
                     start_thread = True
             except Analysis.DoesNotExist:
                 pass
+        elif self.run_automatically:
+            # Brand-new object with run_automatically=True from the start.
+            start_thread = True
 
         super().save(*args, **kwargs)
 

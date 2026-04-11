@@ -25,9 +25,11 @@ class PricesConfig(AppConfig):
 
     def ready(self):
         import sys
-        # Only start background threads when actually running the development server.
+        # Start background threads when running the dev server or gunicorn.
         # Excluded: migrate, shell, test, and any other management commands.
-        if 'runserver' not in sys.argv:
+        is_runserver = 'runserver' in sys.argv
+        is_gunicorn = 'gunicorn' in sys.modules
+        if not (is_runserver or is_gunicorn):
             return
         from .models import Analysis
         for analysis in Analysis.objects.filter(active=True, run_automatically=True):

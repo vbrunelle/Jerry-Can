@@ -1,0 +1,36 @@
+# ============================================================
+# Jerry Can — Production Docker Compose
+# ============================================================
+# This file is self-sufficient. You only need:
+#   1. This file (rename to docker-compose.yml)
+#   2. A .env file (copy .env.example and fill in values)
+#   3. The nginx/ folder with default.conf
+#
+# Pull and start:
+#   docker compose pull
+#   docker compose up -d
+# ============================================================
+
+services:
+  web:
+    image: ghcr.io/vbrunelle/jerry-can:latest
+    env_file: .env
+    volumes:
+      - app_data:/app/data
+      - static_files:/app/staticfiles
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_files:/app/staticfiles:ro
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  app_data:
+  static_files:
