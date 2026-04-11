@@ -291,14 +291,38 @@
       // (1) Row-axis attribute names — read directly from stored options, no DOM parsing needed
       pivotOpts.rows.forEach(function (r) { headerCells.push(escapeCell(r)); });
 
-      // (2) Col-value labels — in thead row n°cols.length (1-based :nth-child).
-      //     pivottable generates one <tr> per colAttr; the col values are pvtColLabel in
-      //     the LAST col-attr row (index = cols.length). pvtRowLabel cells from deeper
-      //     spans are NOT repeated in the DOM — hence the failed previous approaches.
+      // (2) Col-value labels — multi-level aware.
+      //
+      // pivottable generates one <thead><tr> per colAttr. Each pvtColLabel cell
+      // in row j has colspan = number of leaf columns it covers. To get one
+      // label per leaf column we expand each cell by its colspan, giving a flat
+      // array per level. We then zip by position and join with " - ".
+      //
+      // Example: colAttrs=["Region","Fuel"], 2 regions × 2 fuels
+      //   row 0 expandedRows: ["Abitibi","Abitibi","Estrie","Estrie"]
+      //   row 1 expandedRows: ["Diesel","Régulier","Diesel","Régulier"]
+      //   → headers: "Abitibi - Diesel", "Abitibi - Régulier", "Estrie - Diesel", …
       var colDepth = pivotOpts.cols.length;
       if (colDepth > 0) {
-        $table.find("thead tr:nth-child(" + colDepth + ") th.pvtColLabel")
-              .each(function () { headerCells.push(escapeCell($(this).text())); });
+        var expandedRows = [];
+        for (var j = 0; j < colDepth; j++) {
+          var labels = [];
+          $table.find("thead tr:nth-child(" + (j + 1) + ") th.pvtColLabel")
+                .each(function () {
+                  var text = $(this).text().trim();
+                  var cs   = parseInt($(this).attr("colspan") || "1", 10);
+                  for (var k = 0; k < cs; k++) { labels.push(text); }
+                });
+          expandedRows.push(labels);
+        }
+        var numLeafCols = expandedRows[colDepth - 1].length;
+        for (var ci = 0; ci < numLeafCols; ci++) {
+          var parts = [];
+          for (var lv = 0; lv < colDepth; lv++) {
+            if (expandedRows[lv][ci]) { parts.push(expandedRows[lv][ci]); }
+          }
+          headerCells.push(escapeCell(parts.join(" - ")));
+        }
       }
 
       // (3) "Totals" column — pvtTotalLabel appears once in thead with a rowspan
