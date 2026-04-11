@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>{% block title %}Jerry Can{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css"/>
+</head>
+<body class="antialiased">
+<div class="wrapper">
+
+  <aside class="navbar navbar-vertical navbar-expand-lg">
+    <div class="container-fluid">
+      <a href="/" class="navbar-brand">
+        <span class="navbar-brand-text">⛽ Jerry Can</span>
+      </a>
+      <div class="collapse navbar-collapse" id="sidebar-menu">
+        <ul class="navbar-nav pt-lg-3">
+          {% if user.is_staff %}
+          <li class="nav-item">
+            <a class="nav-link {% block nav_analysis %}{% endblock %}" href="{% url 'prices:analysis_list' %}">
+              <span class="nav-link-icon"><svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"/><path d="M3.6 9h16.8"/><path d="M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18"/><path d="M12.5 3a17 17 0 0 1 0 18"/></svg></span>
+              <span class="nav-link-title">Analyses</span>
+            </a>
+          </li>
+          {% endif %}
+          <li class="nav-item">
+            <a class="nav-link {% block nav_stations %}{% endblock %}" href="{% url 'prices:station_list' %}">
+              <span class="nav-link-icon"><svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/><path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0z"/></svg></span>
+              <span class="nav-link-title">Stations</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% block nav_fuels %}{% endblock %}" href="{% url 'prices:fuel_list' %}">
+              <span class="nav-link-icon"><svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M14 11h1a2 2 0 0 1 2 2v3a1.5 1.5 0 0 0 3 0v-7l-3 -3"/><path d="M4 20v-14a2 2 0 0 1 2 -2h6a2 2 0 0 1 2 2v14"/><path d="M3 20h11"/><path d="M18 7v1a1 1 0 0 0 1 1h1"/><path d="M4 11h10"/></svg></span>
+              <span class="nav-link-title">Fuels</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% block nav_snapshots %}{% endblock %}" href="{% url 'prices:snapshot_list' %}">
+              <span class="nav-link-icon"><svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 7a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12z"/><path d="M16 3v4"/><path d="M8 3v4"/><path d="M4 11h16"/><path d="M11 15h1"/><path d="M12 15v3"/></svg></span>
+              <span class="nav-link-title">Snapshots</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link {% block nav_prices %}{% endblock %}" href="{% url 'prices:price_list' %}">
+              <span class="nav-link-icon"><svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0 -18"/><path d="M14.8 9a2 2 0 0 0 -1.8 -1h-2a2 2 0 1 0 0 4h2a2 2 0 1 1 0 4h-2a2 2 0 0 1 -1.8 -1"/><path d="M12 7v10"/></svg></span>
+              <span class="nav-link-title">Prices</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </aside>
+
+  <div class="page-wrapper">
+    <div class="page-header d-print-none">
+      <div class="container-xl">
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h2 class="page-title">{% block page_title %}{% endblock %}</h2>
+          </div>
+          {% block page_actions %}{% endblock %}
+          <div class="col-auto ms-auto">
+            {% if user.is_authenticated %}
+              <span class="me-2 text-muted">{{ user.username }}</span>
+              <a href="{% url 'logout' %}" class="btn btn-sm btn-outline-secondary">Sign out</a>
+            {% else %}
+              <a href="{% url 'login' %}" class="btn btn-sm btn-outline-primary">Sign in</a>
+            {% endif %}
+          </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"></script>
+</body>
+</html>

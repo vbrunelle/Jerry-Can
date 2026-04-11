@@ -1,0 +1,29 @@
+{% extends "prices/base.html" %}
+{% block title %}Snapshots{% endblock %}
+{% block nav_snapshots %}active{% endblock %}
+{% block page_title %}Snapshots{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr><th>#</th><th>Timestamp</th><th>Analysis</th><th>Prices</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for snapshot in object_list %}
+        <tr>
+          <td>{{ snapshot.pk }}</td>
+          <td>{{ snapshot.timestamp|date:"Y-m-d H:i:s" }}</td>
+          <td><a href="{% url 'prices:analysis_detail' snapshot.analysis.pk %}">#{{ snapshot.analysis.pk }}</a></td>
+          <td>{{ snapshot.prices.count }}</td>
+          <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-muted text-center py-4">No snapshots yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

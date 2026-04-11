@@ -1,0 +1,46 @@
+{% extends "prices/base.html" %}
+{% block title %}Analyses{% endblock %}
+{% block nav_analysis %}active{% endblock %}
+{% block page_title %}Analyses{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">All analyses</h3>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Data source URL</th>
+          <th>Update frequency</th>
+          <th>Active</th>
+          <th>Created at</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for analysis in object_list %}
+        <tr>
+          <td>{{ analysis.pk }}</td>
+          <td><a href="{{ analysis.data_source_url }}" target="_blank" class="text-truncate d-inline-block" style="max-width:300px;">{{ analysis.data_source_url }}</a></td>
+          <td>{{ analysis.update_frequency }} min</td>
+          <td>
+            {% if analysis.active %}
+            <span class="badge bg-success-lt">Active</span>
+            {% else %}
+            <span class="badge bg-secondary-lt">Inactive</span>
+            {% endif %}
+          </td>
+          <td>{{ analysis.created_at|date:"Y-m-d H:i" }}</td>
+          <td><a href="{% url 'prices:analysis_detail' analysis.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="text-muted text-center py-4">No analyses yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
