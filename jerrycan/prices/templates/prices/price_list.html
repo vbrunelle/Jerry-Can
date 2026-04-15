@@ -49,7 +49,7 @@
     var apiUrl = "{% url 'prices:prices_api' %}" + window.location.search;
     $.getJSON(apiUrl, function(response) {
       $("#pivot-output").pivotUI(response.data, {
-        rows: ["Region", "City", "Station"],
+        rows: ["Snapshot", "Region"],
         cols: ["Fuel"],
         aggregatorName: "Average",
         vals: ["Price"],
