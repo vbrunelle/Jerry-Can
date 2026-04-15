@@ -23,7 +23,7 @@
             {% elif snapshot.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
             {% else %}<span class="badge bg-secondary-lt">{{ snapshot.status }}</span>{% endif %}
           </td>
-          <td>{{ snapshot.prices.count }}</td>
+          <td>{{ snapshot.price_count }}</td>
           <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
         </tr>
         {% empty %}

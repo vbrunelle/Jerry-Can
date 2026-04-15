@@ -107,6 +107,10 @@ class Analysis(models.Model):
         default=False,
         help_text="Automatically take snapshots at the configured frequency.",
     )
+    max_snapshots = models.PositiveIntegerField(
+        default=100,
+        help_text="Maximum number of snapshots to display in pivot tables.",
+    )
 
     @classmethod
     def get_active(cls):

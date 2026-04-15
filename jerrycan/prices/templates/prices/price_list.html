@@ -19,7 +19,20 @@
     </div>
   </div>
   <div class="card-body">
-    <div id="pivot-output"></div>
+    {% include "prices/_snapshot_filter.html" %}
+    {% if snapshot_too_many %}
+    <div class="alert alert-warning" role="alert">
+      <h4 class="alert-title">Too many snapshots</h4>
+      <p>Your selection covers <strong>{{ snapshot_total }}</strong> snapshots, which exceeds the maximum of {{ max_snapshots }}. Please choose a broader time period or use the "Latest" mode with pagination.</p>
+    </div>
+    {% else %}
+    <div id="pivot-output">
+      <div class="d-flex align-items-center justify-content-center py-5 text-muted" id="pivot-loading">
+        <div class="spinner-border me-2" role="status"></div>
+        Loading pivot table…
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
@@ -32,13 +45,19 @@
   $(function() {
     // Prevent jQuery UI from wrapping <select> elements — we use native selects styled with CSS
     $.fn.selectmenu = function() { return this; };
-    var data = {{ prices_json|safe }};
-    $("#pivot-output").pivotUI(data, {
-      rows: ["Region", "City", "Station"],
-      cols: ["Fuel"],
-      aggregatorName: "Average",
-      vals: ["Price"],
+    {% if not snapshot_too_many %}
+    var apiUrl = "{% url 'prices:prices_api' %}" + window.location.search;
+    $.getJSON(apiUrl, function(response) {
+      $("#pivot-output").pivotUI(response.data, {
+        rows: ["Region", "City", "Station"],
+        cols: ["Fuel"],
+        aggregatorName: "Average",
+        vals: ["Price"],
+      });
+    }).fail(function() {
+      $("#pivot-output").html('<div class="alert alert-danger">Failed to load price data.</div>');
     });
+    {% endif %}
   });
 </script>
 {% endblock %}

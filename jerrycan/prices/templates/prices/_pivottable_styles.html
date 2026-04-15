@@ -338,11 +338,31 @@
     }
 
     var rows = [headerCells.join(",")];
-    $table.find("tbody tr").each(function () {
-      var cells = [];
-      $(this).find("th, td").each(function () { cells.push(escapeCell($(this).text())); });
-      if (cells.length) { rows.push(cells.join(",")); }
+
+    // Build a 2D grid from tbody that correctly fills in rowspan gaps.
+    var bodyRows = $table.find("tbody tr");
+    var spanGrid = [];  // spanGrid[r][c] = text content if occupied by a rowspan cell above
+    bodyRows.each(function (rowIdx) {
+      if (!spanGrid[rowIdx]) { spanGrid[rowIdx] = []; }
+      var colIdx = 0;
+      $(this).find("th, td").each(function () {
+        // Advance past cells already occupied by previous rowspans
+        while (spanGrid[rowIdx][colIdx] !== undefined) { colIdx++; }
+        var text = escapeCell($(this).text());
+        var rs = parseInt($(this).attr("rowspan") || "1", 10);
+        var cs = parseInt($(this).attr("colspan") || "1", 10);
+        for (var ri = 0; ri < rs; ri++) {
+          if (!spanGrid[rowIdx + ri]) { spanGrid[rowIdx + ri] = []; }
+          for (var ci = 0; ci < cs; ci++) {
+            spanGrid[rowIdx + ri][colIdx + ci] = text;
+          }
+        }
+        colIdx += cs;
+      });
     });
+    for (var r = 0; r < spanGrid.length; r++) {
+      if (spanGrid[r].length) { rows.push(spanGrid[r].join(",")); }
+    }
 
     var csv = "\uFEFF" + rows.join("\r\n");
     var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });

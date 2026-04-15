@@ -1,18 +1,159 @@
-import json
+import math
+from datetime import datetime
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
+from django.db.models import Count, Max
+from django.db.models.functions import TruncMinute, TruncHour, TruncDay, TruncWeek, TruncMonth, TruncYear
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.generic import CreateView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import AnalysisForm
 from .models import Analysis, Price, Snapshot, Station
 
+TRUNC_MAP = {
+    'minute': TruncMinute,
+    'hour': TruncHour,
+    'day': TruncDay,
+    'week': TruncWeek,
+    'month': TruncMonth,
+    'year': TruncYear,
+}
 
-def _prices_to_json(prices_qs):
-    return json.dumps([
+
+def _resolve_snapshots(analysis, mode='latest', page=1, until_dt=None, start_dt=None, end_dt=None):
+    """Select which snapshots to display based on mode, pagination and date filters.
+
+    Returns (snapshot_ids, displayed_count, total_count, too_many, total_pages, page).
+    """
+    max_snapshots = analysis.max_snapshots
+    base_qs = Snapshot.objects.filter(
+        analysis=analysis,
+        status=Snapshot.Status.PROCESSED,
+    )
+
+    if mode == 'latest':
+        total = base_qs.count()
+        total_pages = math.ceil(total / max_snapshots) or 1
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * max_snapshots
+        snapshot_ids = list(
+            base_qs.order_by('-timestamp')
+            .values_list('id', flat=True)[offset:offset + max_snapshots]
+        )
+        return snapshot_ids, len(snapshot_ids), total, False, total_pages, page
+
+    trunc_fn = TRUNC_MAP.get(mode)
+    if trunc_fn is None:
+        return _resolve_snapshots(analysis, 'latest', page)
+
+    # Date-range sub-mode: show all buckets between start and end.
+    if start_dt and end_dt:
+        filtered_qs = base_qs.filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
+        buckets = (
+            filtered_qs
+            .annotate(period=trunc_fn('timestamp'))
+            .values('period')
+            .annotate(latest_id=Max('id'))
+            .order_by('-period')
+        )
+        total = buckets.count()
+        if total > max_snapshots:
+            return [], 0, total, True, 1, 1
+        snapshot_ids = [b['latest_id'] for b in buckets]
+        return snapshot_ids, len(snapshot_ids), total, False, 1, 1
+
+    # "Until" sub-mode (default): paginate N buckets up to until_dt.
+    if until_dt:
+        base_qs = base_qs.filter(timestamp__lte=until_dt)
+
+    buckets = (
+        base_qs
+        .annotate(period=trunc_fn('timestamp'))
+        .values('period')
+        .annotate(latest_id=Max('id'))
+        .order_by('-period')
+    )
+
+    total = buckets.count()
+    total_pages = math.ceil(total / max_snapshots) or 1
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * max_snapshots
+    page_buckets = list(buckets[offset:offset + max_snapshots])
+    snapshot_ids = [b['latest_id'] for b in page_buckets]
+    return snapshot_ids, len(snapshot_ids), total, False, total_pages, page
+
+
+def _parse_datetime(value):
+    """Parse a datetime string from query params. Returns aware datetime or None."""
+    if not value:
+        return None
+    for fmt in ('%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+            return dt
+        except ValueError:
+            continue
+    return None
+
+
+def _snapshot_filter_context(request, analysis):
+    """Parse request params and return snapshot filter context dict."""
+    mode = request.GET.get('mode', 'latest')
+    if mode not in ('latest', *TRUNC_MAP):
+        mode = 'latest'
+    try:
+        page = max(1, int(request.GET.get('page', 1)))
+    except (ValueError, TypeError):
+        page = 1
+
+    until_dt = _parse_datetime(request.GET.get('until', ''))
+    start_dt = _parse_datetime(request.GET.get('start', ''))
+    end_dt = _parse_datetime(request.GET.get('end', ''))
+
+    # Determine sub-mode for time-unit modes.
+    # Explicit submode param lets the UI show the right inputs before dates are submitted.
+    explicit_submode = request.GET.get('submode', '')
+    if mode != 'latest' and start_dt and end_dt:
+        submode = 'range'
+    elif mode != 'latest' and (until_dt or explicit_submode == 'until'):
+        submode = 'until'
+        if not until_dt:
+            until_dt = timezone.now()
+    elif mode != 'latest' and explicit_submode == 'range':
+        submode = 'range'
+    else:
+        submode = 'page'
+
+    snapshot_ids, displayed, total, too_many, total_pages, page = _resolve_snapshots(
+        analysis, mode, page,
+        until_dt=until_dt, start_dt=start_dt, end_dt=end_dt,
+    )
+
+    return {
+        'snapshot_mode': mode,
+        'snapshot_submode': submode,
+        'snapshot_page': page,
+        'snapshot_total_pages': total_pages,
+        'snapshot_displayed': displayed,
+        'snapshot_total': total,
+        'snapshot_too_many': too_many,
+        'snapshot_ids': snapshot_ids,
+        'max_snapshots': analysis.max_snapshots,
+        'snapshot_until': request.GET.get('until', '') or timezone.localtime().strftime('%Y-%m-%dT%H:%M'),
+        'snapshot_start': request.GET.get('start', ''),
+        'snapshot_end': request.GET.get('end', ''),
+    }
+
+
+def _prices_to_list(prices_qs):
+    return [
         {
             "Station": p.station.name,
             "City": p.station.city,
@@ -22,7 +163,7 @@ def _prices_to_json(prices_qs):
             "Snapshot": p.snapshot.timestamp.strftime("%Y-%m-%d %H:%M"),
         }
         for p in prices_qs
-    ])
+    ]
 
 
 class HomeView(TemplateView):
@@ -137,8 +278,9 @@ class StationDetailView(DetailView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        prices_qs = Price.objects.filter(station=self.object).select_related("fuel", "snapshot").order_by("-snapshot__timestamp")
-        ctx["prices_json"] = _prices_to_json(prices_qs)
+        analysis = self.object.analysis
+        sf = _snapshot_filter_context(self.request, analysis)
+        ctx.update(sf)
         return ctx
 
 
@@ -148,7 +290,7 @@ class SnapshotListView(ActiveAnalysisMixin, ListView):
     ordering = ["-timestamp"]
 
     def _filter_by_analysis(self, qs, analysis):
-        return qs.filter(analysis=analysis)
+        return qs.filter(analysis=analysis).annotate(price_count=Count('prices'))
 
 
 class SnapshotDetailView(DetailView):
@@ -166,6 +308,42 @@ class PriceListView(ActiveAnalysisMixin, ListView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx["prices_json"] = _prices_to_json(ctx["object_list"])
+        analysis = Analysis.get_active()
+        if analysis:
+            sf = _snapshot_filter_context(self.request, analysis)
+            ctx.update(sf)
+        else:
+            ctx['snapshot_too_many'] = False
         return ctx
+
+
+def prices_api(request):
+    """JSON endpoint returning price data for the active analysis."""
+    analysis = Analysis.get_active()
+    if not analysis:
+        return JsonResponse({'data': []})
+    sf = _snapshot_filter_context(request, analysis)
+    if sf['snapshot_too_many']:
+        return JsonResponse({'data': []})
+    prices_qs = (
+        Price.objects.filter(snapshot_id__in=sf['snapshot_ids'])
+        .select_related('station', 'fuel', 'snapshot')
+        .order_by('station__region', 'station__city', 'station__name')
+    )
+    return JsonResponse({'data': _prices_to_list(prices_qs)})
+
+
+def station_prices_api(request, pk):
+    """JSON endpoint returning price data for a single station."""
+    station = get_object_or_404(Station, pk=pk)
+    analysis = station.analysis
+    sf = _snapshot_filter_context(request, analysis)
+    if sf['snapshot_too_many']:
+        return JsonResponse({'data': []})
+    prices_qs = (
+        Price.objects.filter(station=station, snapshot_id__in=sf['snapshot_ids'])
+        .select_related('station', 'fuel', 'snapshot')
+        .order_by('-snapshot__timestamp')
+    )
+    return JsonResponse({'data': _prices_to_list(prices_qs)})
 

@@ -20,4 +20,7 @@ urlpatterns = [
     path("snapshots/<int:pk>/", views.SnapshotDetailView.as_view(), name="snapshot_detail"),
 
     path("prices/", views.PriceListView.as_view(), name="price_list"),
+
+    path("api/prices/", views.prices_api, name="prices_api"),
+    path("api/stations/<int:pk>/prices/", views.station_prices_api, name="station_prices_api"),
 ]

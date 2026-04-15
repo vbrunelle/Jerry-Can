@@ -35,6 +35,15 @@
           </div>
 
           <div class="mb-3">
+            <label class="form-label required">Max snapshots displayed</label>
+            {{ form.max_snapshots }}
+            {% if form.max_snapshots.errors %}
+              <div class="invalid-feedback d-block">{{ form.max_snapshots.errors.0 }}</div>
+            {% endif %}
+            <small class="form-hint d-block">{{ form.max_snapshots.help_text }}</small>
+          </div>
+
+          <div class="mb-3">
             <label class="form-check">
               {{ form.active }}
               <span class="form-check-label">Set as active analysis</span>

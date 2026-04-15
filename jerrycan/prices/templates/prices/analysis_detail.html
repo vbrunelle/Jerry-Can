@@ -32,6 +32,8 @@
           <dd class="col-7"><a href="{{ object.data_source_url }}" target="_blank">{{ object.data_source_url }}</a></dd>
           <dt class="col-5">Frequency</dt>
           <dd class="col-7">{{ object.update_frequency }} min</dd>
+          <dt class="col-5">Max snapshots</dt>
+          <dd class="col-7">{{ object.max_snapshots }}</dd>
           <dt class="col-5">Status</dt>
           <dd class="col-7">{% if object.active %}<span class="badge bg-success-lt">Active</span>{% else %}<span class="badge bg-secondary-lt">Inactive</span>{% endif %}</dd>
           <dt class="col-5">Auto snapshots</dt>
