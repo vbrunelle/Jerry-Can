@@ -3,6 +3,7 @@ from datetime import datetime
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
+from django.db import connection
 from django.db.models import Count, Max
 from django.db.models.functions import TruncMinute, TruncHour, TruncDay, TruncWeek, TruncMonth, TruncYear
 from django.http import JsonResponse
@@ -166,6 +167,70 @@ def _prices_to_list(prices_qs):
     ]
 
 
+def _sqlite_object_size_bytes(cursor, object_name):
+    cursor.execute(
+        "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name = %s",
+        [object_name],
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def _sqlite_table_size_with_indexes_bytes(cursor, table_name):
+    total = _sqlite_object_size_bytes(cursor, table_name)
+    cursor.execute(f"PRAGMA index_list({table_name})")
+    for _, index_name, *_ in cursor.fetchall():
+        total += _sqlite_object_size_bytes(cursor, index_name)
+    return total
+
+
+def _analysis_storage_estimate(analysis):
+    """Estimate on-disk SQLite size attributable to one analysis and linked rows.
+
+    This is a proportional estimate based on row share in each table, including indexes.
+    """
+    if connection.vendor != 'sqlite':
+        return {
+            'available': False,
+            'reason': 'Storage estimate is currently available for SQLite only.',
+        }
+
+    # Use only analysis-owned tables. Fuel is shared globally across analyses.
+    table_stats = [
+        ('Analysis', 'prices_analysis', 1, Analysis.objects.count()),
+        ('Snapshots', 'prices_snapshot', analysis.snapshots.count(), Snapshot.objects.count()),
+        ('Stations', 'prices_station', analysis.stations.count(), Station.objects.count()),
+        (
+            'Prices',
+            'prices_price',
+            Price.objects.filter(snapshot__analysis=analysis).count(),
+            Price.objects.count(),
+        ),
+    ]
+
+    breakdown = []
+    total_estimated = 0
+    with connection.cursor() as cursor:
+        for label, table_name, own_rows, total_rows in table_stats:
+            table_total_bytes = _sqlite_table_size_with_indexes_bytes(cursor, table_name)
+            ratio = (own_rows / total_rows) if total_rows else 0
+            estimated_bytes = int(table_total_bytes * ratio)
+            total_estimated += estimated_bytes
+            breakdown.append({
+                'label': label,
+                'table_name': table_name,
+                'own_rows': own_rows,
+                'total_rows': total_rows,
+                'estimated_bytes': estimated_bytes,
+            })
+
+    return {
+        'available': True,
+        'estimated_total_bytes': total_estimated,
+        'breakdown': breakdown,
+    }
+
+
 class HomeView(TemplateView):
     template_name = "prices/home.html"
 
@@ -195,6 +260,11 @@ class AnalysisListView(ListView):
 class AnalysisDetailView(DetailView):
     model = Analysis
     template_name = "prices/analysis_detail.html"
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['storage_estimate'] = _analysis_storage_estimate(self.object)
+        return ctx
 
 
 @method_decorator(staff_member_required, name="dispatch")
