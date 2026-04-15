@@ -1,0 +1,45 @@
+{% extends "prices/base.html" %}
+{% block title %}Snapshot #{{ object.pk }}{% endblock %}
+{% block nav_snapshots %}active{% endblock %}
+{% block page_title %}Snapshot #{{ object.pk }}{% endblock %}
+
+{% block content %}
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-3">Timestamp</dt><dd class="col-9">{{ object.timestamp|date:"Y-m-d H:i:s" }}</dd>
+      <dt class="col-3">Analysis</dt><dd class="col-9"><a href="{% url 'prices:analysis_detail' object.analysis.pk %}">#{{ object.analysis.pk }}</a></dd>
+      <dt class="col-3">Status</dt>
+      <dd class="col-9">
+        {% if object.status == 'processed' %}<span class="badge bg-success-lt">Processed</span>
+        {% elif object.status == 'processing' %}<span class="badge bg-warning-lt">Processing</span>
+        {% elif object.status == 'downloading' %}<span class="badge bg-info-lt">Downloading</span>
+        {% elif object.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
+        {% else %}<span class="badge bg-secondary-lt">{{ object.status }}</span>{% endif %}
+      </dd>
+    </dl>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Prices ({{ object.prices.count }})</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr><th>Station</th><th>City</th><th>Fuel</th><th>Price</th></tr>
+      </thead>
+      <tbody>
+        {% for price in object.prices.select_related %}
+        <tr>
+          <td><a href="{% url 'prices:station_detail' price.station.pk %}">{{ price.station.name }}</a></td>
+          <td>{{ price.station.city }}</td>
+          <td>{{ price.fuel.name }}</td>
+          <td>${{ price.price }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" class="text-muted text-center py-4">No prices in this snapshot.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

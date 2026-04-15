@@ -1,0 +1,72 @@
+{% extends "prices/base.html" %}
+{% block title %}Jerry Can — Home{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="row row-deck row-cards mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card">
+      <div class="card-body">
+        <div class="d-flex align-items-center">
+          <div class="subheader">Analyses</div>
+        </div>
+        <div class="h1 mb-3">{{ analysis_count }}</div>
+        <a href="{% url 'prices:analysis_list' %}" class="btn btn-sm btn-outline-primary w-100">View all</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card">
+      <div class="card-body">
+        <div class="subheader">Stations</div>
+        <div class="h1 mb-3">{{ station_count }}</div>
+        <a href="{% url 'prices:station_list' %}" class="btn btn-sm btn-outline-primary w-100">View all</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card">
+      <div class="card-body">
+        <div class="subheader">Snapshots</div>
+        <div class="h1 mb-3">{{ snapshot_count }}</div>
+        <a href="{% url 'prices:snapshot_list' %}" class="btn btn-sm btn-outline-primary w-100">View all</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card">
+      <div class="card-body">
+        <div class="subheader">Price entries</div>
+        <div class="h1 mb-3">{{ price_count }}</div>
+        <a href="{% url 'prices:price_list' %}" class="btn btn-sm btn-outline-primary w-100">View all</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Latest snapshots</h3>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr><th>#</th><th>Timestamp</th><th>Analysis</th><th>Prices</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for snapshot in latest_snapshots %}
+        <tr>
+          <td>{{ snapshot.pk }}</td>
+          <td>{{ snapshot.timestamp|date:"Y-m-d H:i:s" }}</td>
+          <td><a href="{% url 'prices:analysis_detail' snapshot.analysis.pk %}">#{{ snapshot.analysis.pk }}</a></td>
+          <td>{{ snapshot.prices.count }}</td>
+          <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-muted text-center py-4">No snapshots yet. Start an analysis to collect data.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

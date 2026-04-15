@@ -1,4 +1,0 @@
-django>=5.1,<7.0
-gunicorn>=23.0.0
-pyarrow>=14.0.0
-pandas>=2.0.0

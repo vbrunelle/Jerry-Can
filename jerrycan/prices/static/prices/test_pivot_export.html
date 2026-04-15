@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<!--
+  Standalone test for exportPivotCSV().
+  Open in any browser — no server needed.
+  All tests must show PASS (green). Any FAIL (red) means a regression.
+
+  Mock HTML built by tracing pivotTableRenderer() in pivot.js source code.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test — exportPivotCSV</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; font-weight: bold; }
+    pre { background: #f4f4f4; padding: 10px; white-space: pre-wrap; }
+    h2 { margin-top: 2em; }
+  </style>
+</head>
+<body>
+<h1>Test suite — exportPivotCSV</h1>
+<div id="results"></div>
+
+<!-- ── T1: colAttrs=["Fuel"], rowAttrs=["Snapshot"] ──────────────────────────
+  thead row 1: empty th (colspan=1,rowspan=1) | pvtAxisLabel("Fuel")
+               | pvtColLabel("Diesel",rowspan=2) | pvtColLabel("Régulier",rowspan=2)
+               | pvtColLabel("Super",rowspan=2) | pvtTotalLabel(rowspan=2)
+  thead row 2: pvtAxisLabel("Snapshot") | empty th
+-->
+<div id="pivot-output" style="display:none">
+  <table class="pvtTable">
+    <thead>
+      <tr>
+        <th colspan="1" rowspan="1"></th>
+        <th class="pvtAxisLabel">Fuel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Diesel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Régulier</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Super</th>
+        <th class="pvtTotalLabel pvtRowTotalLabel" rowspan="2">Totals</th>
+      </tr>
+      <tr>
+        <th class="pvtAxisLabel">Snapshot</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th class="pvtRowLabel" colspan="2">2026-04-11 02:20</th>
+        <td class="pvtVal">265.90</td><td class="pvtVal">196.90</td><td class="pvtVal">221.90</td>
+        <td class="pvtTotal rowTotal">228.23</td>
+      </tr>
+      <tr>
+        <th class="pvtRowLabel" colspan="2">2026-04-11 02:31</th>
+        <td class="pvtVal">265.90</td><td class="pvtVal">196.90</td><td class="pvtVal">221.90</td>
+        <td class="pvtTotal rowTotal">228.23</td>
+      </tr>
+      <tr>
+        <th class="pvtTotalLabel pvtColTotalLabel" colspan="2">Totals</th>
+        <td class="pvtTotal colTotal">265.90</td><td class="pvtTotal colTotal">196.90</td>
+        <td class="pvtTotal colTotal">221.90</td><td class="pvtGrandTotal">228.23</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── T2: colAttrs=[], rowAttrs=["Station","City"] ─────────────────────────
+  thead row 1 only: pvtAxisLabel("Station") | pvtAxisLabel("City") | pvtTotalLabel
+-->
+<div id="pivot-no-cols" style="display:none">
+  <table class="pvtTable">
+    <thead>
+      <tr>
+        <th class="pvtAxisLabel">Station</th>
+        <th class="pvtAxisLabel">City</th>
+        <th class="pvtTotalLabel pvtRowTotalLabel">Totals</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th class="pvtRowLabel">Dépanneur Sprint</th>
+        <th class="pvtRowLabel">L'Islet</th>
+        <td class="pvtTotal rowTotal">221.00</td>
+      </tr>
+      <tr>
+        <th class="pvtTotalLabel pvtColTotalLabel" colspan="2">Totals</th>
+        <td class="pvtGrandTotal">221.00</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── T4: colAttrs=["Region","Fuel"], rowAttrs=["City","Station"] ───────────
+  colKeys: [["Abitibi","Diesel"],["Abitibi","Régulier"],["Estrie","Diesel"]]
+  thead row 1 (Region):
+    empty th (colspan=2, rowspan=2) | pvtAxisLabel("Region")
+    | pvtColLabel("Abitibi", colspan=2) | pvtColLabel("Estrie", colspan=1)
+    | pvtTotalLabel(rowspan=3)
+  thead row 2 (Fuel, last col-attr row):
+    pvtAxisLabel("Fuel")
+    | pvtColLabel("Diesel",rowspan=2) | pvtColLabel("Régulier",rowspan=2) | pvtColLabel("Diesel",rowspan=2)
+  thead row 3 (rowAttrs):
+    pvtAxisLabel("City") | pvtAxisLabel("Station") | empty th
+-->
+<div id="pivot-multilevel" style="display:none">
+  <table class="pvtTable">
+    <thead>
+      <tr>
+        <th colspan="2" rowspan="2"></th>
+        <th class="pvtAxisLabel">Region</th>
+        <th class="pvtColLabel" colspan="2">Abitibi</th>
+        <th class="pvtColLabel" colspan="1">Estrie</th>
+        <th class="pvtTotalLabel pvtRowTotalLabel" rowspan="3">Totals</th>
+      </tr>
+      <tr>
+        <th class="pvtAxisLabel">Fuel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Diesel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Régulier</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Diesel</th>
+      </tr>
+      <tr>
+        <th class="pvtAxisLabel">City</th>
+        <th class="pvtAxisLabel">Station</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th class="pvtRowLabel" rowspan="1">Alma</th>
+        <th class="pvtRowLabel" rowspan="1">9405 Quebec Inc.</th>
+        <td class="pvtVal">259.90</td><td class="pvtVal">194.40</td>
+        <td class="pvtVal">222.00</td>
+        <td class="pvtTotal rowTotal">225.43</td>
+      </tr>
+      <tr>
+        <th class="pvtTotalLabel pvtColTotalLabel" colspan="3">Totals</th>
+        <td class="pvtTotal colTotal">259.90</td><td class="pvtTotal colTotal">194.40</td>
+        <td class="pvtTotal colTotal">222.00</td><td class="pvtGrandTotal">225.43</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script>
+  /* ── exportPivotCSV — MUST be kept in sync with _pivottable_styles.html ── */
+  function exportPivotCSV(containerId, filename) {
+    var $container = $(containerId);
+    var $table = $container.find("table.pvtTable");
+    if (!$table.length) { return; }
+
+    function escapeCell(text) {
+      return '"' + text.trim().replace(/\r?\n+/g, " ").replace(/"/g, '""') + '"';
+    }
+
+    var headerCells = [];
+    var pivotOpts = $container.data("pivotUIOptions");
+
+    if (pivotOpts) {
+      pivotOpts.rows.forEach(function (r) { headerCells.push(escapeCell(r)); });
+
+      var colDepth = pivotOpts.cols.length;
+      if (colDepth > 0) {
+        var expandedRows = [];
+        for (var j = 0; j < colDepth; j++) {
+          var labels = [];
+          $table.find("thead tr:nth-child(" + (j + 1) + ") th.pvtColLabel")
+                .each(function () {
+                  var text = $(this).text().trim();
+                  var cs   = parseInt($(this).attr("colspan") || "1", 10);
+                  for (var k = 0; k < cs; k++) { labels.push(text); }
+                });
+          expandedRows.push(labels);
+        }
+        var numLeafCols = expandedRows[colDepth - 1].length;
+        for (var ci = 0; ci < numLeafCols; ci++) {
+          var parts = [];
+          for (var lv = 0; lv < colDepth; lv++) {
+            if (expandedRows[lv][ci]) { parts.push(expandedRows[lv][ci]); }
+          }
+          headerCells.push(escapeCell(parts.join(" - ")));
+        }
+      }
+
+      var $tot = $table.find("thead th.pvtTotalLabel").first();
+      if ($tot.length) { headerCells.push(escapeCell($tot.text())); }
+
+    } else {
+      $table.find("thead tr:last th").each(function () {
+        var t = $(this).text().trim();
+        if (t) { headerCells.push(escapeCell(t)); }
+      });
+    }
+
+    var rows = [headerCells.join(",")];
+    $table.find("tbody tr").each(function () {
+      var cells = [];
+      $(this).find("th, td").each(function () { cells.push(escapeCell($(this).text())); });
+      if (cells.length) { rows.push(cells.join(",")); }
+    });
+
+    return "\uFEFF" + rows.join("\r\n"); // return instead of triggering download for tests
+  }
+
+  /* ── Test helpers ─────────────────────────────────────────────────────── */
+  var passed = 0, failed = 0, out = [];
+
+  function assert(label, actual, expected) {
+    if (actual === expected) {
+      passed++;
+      out.push('<div class="pass">PASS — ' + label + '</div>');
+    } else {
+      failed++;
+      out.push('<div class="fail">FAIL — ' + label
+        + '<br>  Expected: <pre>' + expected + '</pre>'
+        + '  Got:      <pre>' + actual + '</pre></div>');
+    }
+  }
+
+  /* ── T1: 1 colAttr ("Fuel"), 1 rowAttr ("Snapshot") ─────────────────── */
+  $("#pivot-output").data("pivotUIOptions", { rows: ["Snapshot"], cols: ["Fuel"] });
+  var lines1 = exportPivotCSV("#pivot-output").replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T1 header — single col axis",
+    lines1[0], '"Snapshot","Diesel","Régulier","Super","Totals"');
+  assert("T1 data row 1",
+    lines1[1], '"2026-04-11 02:20","265.90","196.90","221.90","228.23"');
+  assert("T1 data row 2",
+    lines1[2], '"2026-04-11 02:31","265.90","196.90","221.90","228.23"');
+  assert("T1 totals row",
+    lines1[3], '"Totals","265.90","196.90","221.90","228.23"');
+  assert("T1 total line count", lines1.length, 4);
+
+  /* ── T2: no colAttrs, two rowAttrs ──────────────────────────────────── */
+  $("#pivot-no-cols").data("pivotUIOptions", { rows: ["Station", "City"], cols: [] });
+  var lines2 = exportPivotCSV("#pivot-no-cols").replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T2 header — no col axis, two row attrs",
+    lines2[0], '"Station","City","Totals"');
+  assert("T2 data row 1",
+    lines2[1], '"Dépanneur Sprint","L\'Islet","221.00"');
+
+  /* ── T3: no pivotUIOptions (plain .pivot() fallback) ─────────────────  */
+  var $plain = $('<div><table class="pvtTable"><thead><tr>'
+    + '<th class="pvtRowLabel">Station</th>'
+    + '<th class="pvtColLabel">Diesel</th>'
+    + '<th class="pvtTotalLabel">Totals</th>'
+    + '</tr></thead><tbody>'
+    + '<tr><th>Dépanneur Sprint</th><td>265.90</td><td>265.90</td></tr>'
+    + '</tbody></table></div>');
+  var lines3 = exportPivotCSV($plain).replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T3 fallback header (no pivotUIOptions)",
+    lines3[0], '"Station","Diesel","Totals"');
+
+  /* ── T4: 2 colAttrs ("Region"+"Fuel"), 2 rowAttrs ("City"+"Station") ── */
+  $("#pivot-multilevel").data("pivotUIOptions", {
+    rows: ["City", "Station"],
+    cols: ["Region", "Fuel"]
+  });
+  var lines4 = exportPivotCSV("#pivot-multilevel").replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T4 header — two col axes concatenated with ' - '",
+    lines4[0],
+    '"City","Station","Abitibi - Diesel","Abitibi - Régulier","Estrie - Diesel","Totals"');
+  assert("T4 data row 1",
+    lines4[1],
+    '"Alma","9405 Quebec Inc.","259.90","194.40","222.00","225.43"');
+  assert("T4 totals row",
+    lines4[2],
+    '"Totals","259.90","194.40","222.00","225.43"');
+  assert("T4 total line count", lines4.length, 3);
+
+  /* ── Summary ─────────────────────────────────────────────────────────── */
+  var summary = '<h2>' + (failed === 0
+    ? '<span class="pass">All ' + passed + ' tests passed ✓</span>'
+    : '<span class="fail">' + failed + ' FAILED / ' + passed + ' passed</span>') + '</h2>';
+  document.getElementById("results").innerHTML = summary + out.join("\n");
+</script>
+</body>
+</html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test — exportPivotCSV</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; font-weight: bold; }
+    pre { background: #f4f4f4; padding: 10px; white-space: pre-wrap; }
+    h2 { margin-top: 2em; }
+  </style>
+</head>
+<body>
+<h1>Test suite — exportPivotCSV</h1>
+<div id="results"></div>
+
+<!-- ── Mock pivot container (hidden) ─────────────────────────────────────── -->
+<div id="pivot-output" style="display:none">
+  <table class="pvtTable" data-numrows="3" data-numcols="3">
+    <thead>
+      <!-- Row 1: col-attr row for "Fuel" -->
+      <tr>
+        <th colspan="1" rowspan="1"></th>
+        <th class="pvtAxisLabel">Fuel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Diesel</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Régulier</th>
+        <th class="pvtColLabel" colspan="1" rowspan="2">Super</th>
+        <th class="pvtTotalLabel pvtRowTotalLabel" rowspan="2">Totals</th>
+      </tr>
+      <!-- Row 2: row-attr row for "Snapshot" -->
+      <tr>
+        <th class="pvtAxisLabel">Snapshot</th>
+        <th></th>
+        <!-- pvtColLabel cells omitted here — they have rowspan=2 in row 1 -->
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th class="pvtRowLabel" rowspan="1" colspan="2">2026-04-11 02:20</th>
+        <td class="pvtVal">265.90</td>
+        <td class="pvtVal">196.90</td>
+        <td class="pvtVal">221.90</td>
+        <td class="pvtTotal rowTotal">228.23</td>
+      </tr>
+      <tr>
+        <th class="pvtRowLabel" rowspan="1" colspan="2">2026-04-11 02:31</th>
+        <td class="pvtVal">265.90</td>
+        <td class="pvtVal">196.90</td>
+        <td class="pvtVal">221.90</td>
+        <td class="pvtTotal rowTotal">228.23</td>
+      </tr>
+      <tr>
+        <th class="pvtTotalLabel pvtColTotalLabel" colspan="2">Totals</th>
+        <td class="pvtTotal colTotal">265.90</td>
+        <td class="pvtTotal colTotal">196.90</td>
+        <td class="pvtTotal colTotal">221.90</td>
+        <td class="pvtGrandTotal">228.23</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="pivot-no-cols" style="display:none">
+  <!--
+    colAttrs=[], rowAttrs=["Station", "City"]
+    thead has only 1 row: pvtAxisLabel("Station"), pvtAxisLabel("City"), pvtTotalLabel("Totals")
+  -->
+  <table class="pvtTable" data-numrows="2" data-numcols="0">
+    <thead>
+      <tr>
+        <th class="pvtAxisLabel">Station</th>
+        <th class="pvtAxisLabel">City</th>
+        <th class="pvtTotalLabel pvtRowTotalLabel">Totals</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th class="pvtRowLabel" rowspan="1">Dépanneur Sprint</th>
+        <th class="pvtRowLabel" rowspan="1">L'Islet</th>
+        <td class="pvtTotal rowTotal">221.00</td>
+      </tr>
+      <tr>
+        <th class="pvtTotalLabel pvtColTotalLabel" colspan="2">Totals</th>
+        <td class="pvtGrandTotal">221.00</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script>
+  /* ── exportPivotCSV (copied verbatim from _pivottable_styles.html) ────── */
+  function exportPivotCSV(containerId, filename) {
+    var $container = $(containerId);
+    var $table = $container.find("table.pvtTable");
+    if (!$table.length) { return; }
+
+    function escapeCell(text) {
+      return '"' + text.trim().replace(/\r?\n+/g, " ").replace(/"/g, '""') + '"';
+    }
+
+    var headerCells = [];
+    var pivotOpts = $container.data("pivotUIOptions");
+
+    if (pivotOpts) {
+      pivotOpts.rows.forEach(function (r) { headerCells.push(escapeCell(r)); });
+      var colDepth = pivotOpts.cols.length;
+      if (colDepth > 0) {
+        $table.find("thead tr:nth-child(" + colDepth + ") th.pvtColLabel")
+              .each(function () { headerCells.push(escapeCell($(this).text())); });
+      }
+      var $tot = $table.find("thead th.pvtTotalLabel").first();
+      if ($tot.length) { headerCells.push(escapeCell($tot.text())); }
+    } else {
+      $table.find("thead tr:last th").each(function () {
+        var t = $(this).text().trim();
+        if (t) { headerCells.push(escapeCell(t)); }
+      });
+    }
+
+    var rows = [headerCells.join(",")];
+    $table.find("tbody tr").each(function () {
+      var cells = [];
+      $(this).find("th, td").each(function () { cells.push(escapeCell($(this).text())); });
+      if (cells.length) { rows.push(cells.join(",")); }
+    });
+
+    return "\uFEFF" + rows.join("\r\n"); // return instead of download for tests
+  }
+
+  /* ── Test helpers ─────────────────────────────────────────────── */
+  var passed = 0, failed = 0;
+  var out = [];
+
+  function assert(label, actual, expected) {
+    if (actual === expected) {
+      passed++;
+      out.push('<div class="pass">PASS — ' + label + '</div>');
+    } else {
+      failed++;
+      out.push('<div class="fail">FAIL — ' + label + '<br>'
+        + '  Expected: <pre>' + expected + '</pre>'
+        + '  Got:      <pre>' + actual + '</pre></div>');
+    }
+  }
+
+  /* ── Test 1: normal case — 1 colAttr ("Fuel"), 1 rowAttr ("Snapshot") ── */
+  $("#pivot-output").data("pivotUIOptions", { rows: ["Snapshot"], cols: ["Fuel"] });
+  var csv1 = exportPivotCSV("#pivot-output", "test.csv");
+  var lines1 = csv1.replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T1 header — single col axis",
+    lines1[0],
+    '"Snapshot","Diesel","Régulier","Super","Totals"');
+
+  assert("T1 data row 1",
+    lines1[1],
+    '"2026-04-11 02:20","265.90","196.90","221.90","228.23"');
+
+  assert("T1 data row 2",
+    lines1[2],
+    '"2026-04-11 02:31","265.90","196.90","221.90","228.23"');
+
+  assert("T1 totals row",
+    lines1[3],
+    '"Totals","265.90","196.90","221.90","228.23"');
+
+  assert("T1 correct number of lines (header + 2 data + totals = 4)",
+    lines1.length, 4);
+
+  /* ── Test 2: no colAttrs, multiple rowAttrs ─────────────────── */
+  $("#pivot-no-cols").data("pivotUIOptions", { rows: ["Station", "City"], cols: [] });
+  var csv2 = exportPivotCSV("#pivot-no-cols", "test2.csv");
+  var lines2 = csv2.replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T2 header — no col axis, two row attrs",
+    lines2[0],
+    '"Station","City","Totals"');
+
+  assert("T2 data row 1",
+    lines2[1],
+    '"Dépanneur Sprint","L\'Islet","221.00"');
+
+  /* ── Test 3: no pivotUIOptions stored (plain .pivot()) ── */
+  var $plain = $('<div><table class="pvtTable"><thead><tr>'
+    + '<th class="pvtRowLabel">Station</th>'
+    + '<th class="pvtColLabel">Diesel</th>'
+    + '<th class="pvtTotalLabel">Totals</th>'
+    + '</tr></thead><tbody>'
+    + '<tr><th>Dépanneur Sprint</th><td>265.90</td><td>265.90</td></tr>'
+    + '</tbody></table></div>');
+  // No .data("pivotUIOptions") set → fallback branch
+  var csv3 = exportPivotCSV($plain, "test3.csv");
+  var lines3 = csv3.replace(/^\uFEFF/, "").split("\r\n");
+
+  assert("T3 fallback header (no pivotUIOptions)",
+    lines3[0],
+    '"Station","Diesel","Totals"');
+
+  /* ── Results ─────────────────────────────────────────────────── */
+  var summary = '<h2>' + (failed === 0
+    ? '<span class="pass">All ' + passed + ' tests passed ✓</span>'
+    : '<span class="fail">' + failed + ' test(s) FAILED / ' + passed + ' passed</span>') + '</h2>';
+
+  document.getElementById("results").innerHTML = summary + out.join("\n");
+</script>
+</body>
+</html>

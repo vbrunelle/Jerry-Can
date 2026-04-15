@@ -1,0 +1,75 @@
+{% extends "prices/base.html" %}
+{% block title %}{% if form.instance.pk %}Edit Analysis #{{ form.instance.pk }}{% else %}New Analysis{% endif %}{% endblock %}
+{% block nav_analysis %}active{% endblock %}
+{% block page_title %}{% if form.instance.pk %}Edit Analysis #{{ form.instance.pk }}{% else %}New Analysis{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">{% if form.instance.pk %}Edit analysis{% else %}Create analysis{% endif %}</h3>
+      </div>
+      <div class="card-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+
+          <div class="mb-3">
+            <label class="form-label required">Data source URL</label>
+            {{ form.data_source_url }}
+            {% if form.data_source_url.errors %}
+              <div class="invalid-feedback d-block">{{ form.data_source_url.errors.0 }}</div>
+            {% endif %}
+            <small class="form-hint">GeoJSON or GeoJSON.gz endpoint for fuel prices.</small>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label required">Update frequency</label>
+            <div class="input-group">
+              {{ form.update_frequency }}
+              <span class="input-group-text">minutes</span>
+            </div>
+            {% if form.update_frequency.errors %}
+              <div class="invalid-feedback d-block">{{ form.update_frequency.errors.0 }}</div>
+            {% endif %}
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label required">Max snapshots displayed</label>
+            {{ form.max_snapshots }}
+            {% if form.max_snapshots.errors %}
+              <div class="invalid-feedback d-block">{{ form.max_snapshots.errors.0 }}</div>
+            {% endif %}
+            <small class="form-hint d-block">{{ form.max_snapshots.help_text }}</small>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-check">
+              {{ form.active }}
+              <span class="form-check-label">Set as active analysis</span>
+            </label>
+            <small class="form-hint d-block">{{ form.active.help_text }}</small>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-check">
+              {{ form.run_automatically }}
+              <span class="form-check-label">Run automatically</span>
+            </label>
+            <small class="form-hint d-block">{{ form.run_automatically.help_text }}</small>
+          </div>
+
+          <div class="form-footer">
+            <button type="submit" class="btn btn-primary">{% if form.instance.pk %}Save changes{% else %}Create analysis{% endif %}</button>
+            {% if form.instance.pk %}
+            <a href="{% url 'prices:analysis_detail' form.instance.pk %}" class="btn btn-link">Cancel</a>
+            {% else %}
+            <a href="{% url 'prices:analysis_list' %}" class="btn btn-link">Cancel</a>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

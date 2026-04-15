@@ -1,0 +1,4 @@
+django>=6.0,<7.0
+pandas
+requests
+gunicorn

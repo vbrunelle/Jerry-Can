@@ -1,0 +1,378 @@
+<style>
+  /* ════════════════════════════════════════════════════════════
+     Pivottable.js — thème Jerry-Can / Tabler
+     pivot.min.css n'est PAS chargé ; toutes les règles sont ici.
+     ════════════════════════════════════════════════════════════ */
+
+  /* ── Structural rules absorbed from pivot.css ── */
+  .pvtUi td { padding: 3px; }
+  .pvtAxisContainer ul, .pvtVals ul { margin: 0; padding: 0; list-style: none; }
+  .pvtAxisContainer li, .pvtVals li { list-style: none; cursor: move; padding: 1px 3px; }
+  .pvtHorizList li { display: inline; }
+  .pvtVertList  li { display: block; }
+  .pvtFilteredAttribute { font-style: italic; opacity: 0.7; }
+  .pvtAggregator { margin-bottom: 3px; }
+  .pvtAxisLabel { width: 10px; text-align: center; }
+  .pvtVals { text-align: center; }
+  /* Keep the rows-axis cell top-aligned and as narrow as its content */
+  .pvtRows { vertical-align: top !important; width: 1%; }
+  .pvtCheckContainer { text-align: left; overflow-y: auto; height: 200px; }
+  .pvtCheckContainer p { margin: 2px; }
+
+  /* ── Main container ── */
+  .pvtUi {
+    font-family: var(--tblr-font-sans-serif, inherit);
+    font-size: 0.875rem;
+    color: var(--tblr-body-color, #1d273b);
+    border-collapse: separate;
+    border-spacing: 4px;
+  }
+
+  /* ── Renderer & aggregator selects ── */
+  .pvtUi select {
+    appearance: none;
+    display: inline-block;
+    width: auto;
+    padding: 0.3rem 2rem 0.3rem 0.6rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    color: var(--tblr-body-color, #1d273b);
+    background: #fff url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23626976' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e") no-repeat right 0.5rem center/14px 10px;
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    cursor: pointer;
+  }
+  /* Aggregator select has long options ("Sample Standard Deviation", etc.) — cap its width.
+     The native dropdown when open still renders options at full width in all browsers. */
+  select.pvtAggregator {
+    max-width: 130px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+  .pvtUi select:focus {
+    outline: none;
+    border-color: var(--tblr-primary, #206bc4);
+    box-shadow: 0 0 0 0.2rem rgba(32,107,196,.15);
+  }
+
+  /* ── Sort order buttons (↕ ⇄) ── */
+  .pvtRowOrder, .pvtColOrder {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    color: var(--tblr-secondary, #626976);
+    background: #fff;
+    user-select: none;
+    vertical-align: middle;
+  }
+  .pvtRowOrder:hover, .pvtColOrder:hover {
+    color: var(--tblr-primary, #206bc4);
+    border-color: var(--tblr-primary, #206bc4);
+  }
+
+  /* ── Drag-and-drop zones ── */
+  .pvtAxisContainer, .pvtVals {
+    background: var(--tblr-bg-surface, #fff);
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    padding: 4px 6px;
+    min-width: 20px;
+    min-height: 30px;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  /* ── Unused fields zone ── */
+  .pvtUnused { background: var(--tblr-bg-surface-secondary, #f6f8fb); }
+
+  /* ── Attribute chips ── */
+  .pvtAttr {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--tblr-primary-lt, #e8f0fe);
+    color: var(--tblr-primary, #206bc4);
+    border: 1px solid var(--tblr-primary, #206bc4);
+    border-radius: calc(var(--tblr-border-radius, 4px) - 1px);
+    padding: 2px 8px;
+    font-size: 0.8125rem;
+    user-select: none;
+    cursor: grab;
+    white-space: nowrap;
+  }
+  .pvtAttr:hover { background: var(--tblr-primary, #206bc4); color: #fff; }
+
+  /* ── Filter triangle inside chip ── */
+  .pvtTriangle {
+    font-size: 0.65rem;
+    color: var(--tblr-primary, #206bc4);
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  .pvtAttr:hover .pvtTriangle { color: #fff; opacity: 1; }
+
+  /* ── Filter popup ── */
+  .pvtFilterBox {
+    z-index: 100;
+    width: 300px;
+    position: absolute;
+    background: var(--tblr-bg-surface, #fff);
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.12);
+    padding: 12px;
+    font-size: 0.875rem;
+    color: var(--tblr-body-color, #1d273b);
+  }
+  .pvtFilterBox h4 { margin: 0 0 8px; font-size: 0.875rem; font-weight: 600; }
+  .pvtFilterBox p { margin: 8px 0; }
+  .pvtFilterBox p label { float: right; cursor: pointer; font-size: 0.8125rem; }
+  .pvtFilterBox input[type=text] {
+    width: 100%;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    color: var(--tblr-body-color, #1d273b);
+    background: var(--tblr-bg-surface, #fff);
+    border: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-radius: var(--tblr-border-radius, 4px);
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+  .pvtFilterBox input[type=text]:focus {
+    outline: none;
+    border-color: var(--tblr-primary, #206bc4);
+    box-shadow: 0 0 0 0.2rem rgba(32,107,196,.15);
+  }
+  .pvtButton {
+    float: right;
+    margin: 3px;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--tblr-primary, #206bc4);
+    background: var(--tblr-bg-surface, #fff);
+    border: 1px solid var(--tblr-primary, #206bc4);
+    border-radius: var(--tblr-border-radius, 4px);
+    cursor: pointer;
+  }
+  .pvtButton:hover {
+    background: var(--tblr-primary, #206bc4);
+    color: #fff;
+  }
+
+  /* ── Pivot table ── */
+  table.pvtTable {
+    border-collapse: collapse;
+    width: auto;
+    font-family: var(--tblr-font-sans-serif, inherit);
+    font-size: 0.875rem;
+    color: var(--tblr-body-color, #1d273b);
+  }
+
+  /* Span header row (e.g. "FUEL") and column value headers (DIESEL, RÉGULIER…) — stay on one line */
+  table.pvtTable thead tr th {
+    background: var(--tblr-bg-surface-secondary, #f6f8fb);
+    border-bottom: 2px solid var(--tblr-border-color, #e6e7e9);
+    border-right: 1px solid var(--tblr-border-color, #e6e7e9);
+    padding: 0.4rem 0.75rem;
+    font-weight: 600;
+    color: var(--tblr-secondary, #626976);
+    text-transform: uppercase;
+    font-size: 0.6875rem;
+    letter-spacing: .05em;
+    vertical-align: bottom;
+    white-space: nowrap;
+    width: 80px;
+    text-align: right;
+  }
+
+  /* Row header cells (dimension labels) — wrap allowed, capped width */
+  table.pvtTable tbody tr th,
+  table.pvtTable .pvtRowLabel,
+  table.pvtTable .pvtColLabel {
+    background: var(--tblr-bg-surface-secondary, #f6f8fb);
+    border-bottom: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-right: 1px solid var(--tblr-border-color, #e6e7e9);
+    padding: 0.4rem 0.75rem;
+    color: var(--tblr-secondary, #626976);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: normal;
+    overflow-wrap: break-word;
+    max-width: 160px;
+    text-align: left;
+  }
+
+  /* Data cells */
+  table.pvtTable tbody tr td {
+    background: var(--tblr-bg-surface, #fff);
+    border-bottom: 1px solid var(--tblr-border-color, #e6e7e9);
+    border-right: 1px solid var(--tblr-border-color, #e6e7e9);
+    padding: 0.4rem 0.75rem;
+    vertical-align: middle;
+    color: var(--tblr-body-color, #1d273b);
+  }
+  table.pvtTable tbody tr:hover td,
+  table.pvtTable tbody tr:hover th {
+    background: var(--tblr-table-hover-bg, #edf2fb);
+  }
+
+  /* Value cells — fixed compact width, right-aligned */
+  table.pvtTable .pvtVal {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    width: 80px;
+    white-space: nowrap;
+  }
+
+  /* Subtotal & grand total — same width */
+  table.pvtTable .pvtTotal,
+  table.pvtTable .pvtGrandTotal {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    width: 80px;
+    white-space: nowrap;
+    background: var(--tblr-bg-surface-secondary, #f6f8fb);
+    color: var(--tblr-body-color, #1d273b);
+    border-top: 2px solid var(--tblr-border-color, #e6e7e9);
+  }
+
+  /* "Totals" row label */
+  table.pvtTable .pvtTotalLabel {
+    font-weight: 600;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    text-align: right;
+    color: var(--tblr-secondary, #626976);
+    background: var(--tblr-bg-surface-secondary, #f6f8fb);
+    border-top: 2px solid var(--tblr-border-color, #e6e7e9);
+  }
+</style>
+<script>
+  /**
+   * Export the currently rendered pivottable to CSV.
+   *
+   * pivottable.js thead structure (verified from pivot.js source):
+   *   - One <tr> per colAttr (class pvtAxisLabel = axis name, pvtColLabel = actual col values)
+   *     The pvtColLabel cells on the last col-attr row have rowspan=2 when rowAttrs exist.
+   *   - Then one <tr> for rowAttrs (class pvtAxisLabel per rowAttr, empty spacer th).
+   *   - pvtTotalLabel appears once in the first row with rowspan spanning all col-attr rows + rowAttr row.
+   *
+   * Using data("pivotUIOptions") avoids fragile DOM class parsing: pivotUI stores the
+   * current rows/cols config on the container element on every refresh.
+   */
+  function exportPivotCSV(containerId, filename) {
+    var $container = $(containerId);
+    var $table = $container.find("table.pvtTable");
+    if (!$table.length) { return; }
+
+    function escapeCell(text) {
+      return '"' + text.trim().replace(/\r?\n+/g, " ").replace(/"/g, '""') + '"';
+    }
+
+    var headerCells = [];
+    var pivotOpts = $container.data("pivotUIOptions");
+
+    if (pivotOpts) {
+      // (1) Row-axis attribute names — read directly from stored options, no DOM parsing needed
+      pivotOpts.rows.forEach(function (r) { headerCells.push(escapeCell(r)); });
+
+      // (2) Col-value labels — multi-level aware.
+      //
+      // pivottable generates one <thead><tr> per colAttr. Each pvtColLabel cell
+      // in row j has colspan = number of leaf columns it covers. To get one
+      // label per leaf column we expand each cell by its colspan, giving a flat
+      // array per level. We then zip by position and join with " - ".
+      //
+      // Example: colAttrs=["Region","Fuel"], 2 regions × 2 fuels
+      //   row 0 expandedRows: ["Abitibi","Abitibi","Estrie","Estrie"]
+      //   row 1 expandedRows: ["Diesel","Régulier","Diesel","Régulier"]
+      //   → headers: "Abitibi - Diesel", "Abitibi - Régulier", "Estrie - Diesel", …
+      var colDepth = pivotOpts.cols.length;
+      if (colDepth > 0) {
+        var expandedRows = [];
+        for (var j = 0; j < colDepth; j++) {
+          var labels = [];
+          $table.find("thead tr:nth-child(" + (j + 1) + ") th.pvtColLabel")
+                .each(function () {
+                  var text = $(this).text().trim();
+                  var cs   = parseInt($(this).attr("colspan") || "1", 10);
+                  for (var k = 0; k < cs; k++) { labels.push(text); }
+                });
+          expandedRows.push(labels);
+        }
+        var numLeafCols = expandedRows[colDepth - 1].length;
+        for (var ci = 0; ci < numLeafCols; ci++) {
+          var parts = [];
+          for (var lv = 0; lv < colDepth; lv++) {
+            if (expandedRows[lv][ci]) { parts.push(expandedRows[lv][ci]); }
+          }
+          headerCells.push(escapeCell(parts.join(" - ")));
+        }
+      }
+
+      // (3) "Totals" column — pvtTotalLabel appears once in thead with a rowspan
+      var $tot = $table.find("thead th.pvtTotalLabel").first();
+      if ($tot.length) { headerCells.push(escapeCell($tot.text())); }
+
+    } else {
+      // Fallback for plain .pivot() (no pivotUIOptions stored on container)
+      $table.find("thead tr:last th").each(function () {
+        var t = $(this).text().trim();
+        if (t) { headerCells.push(escapeCell(t)); }
+      });
+    }
+
+    var rows = [headerCells.join(",")];
+
+    // Build a 2D grid from tbody that correctly fills in rowspan gaps.
+    var bodyRows = $table.find("tbody tr");
+    var spanGrid = [];  // spanGrid[r][c] = text content if occupied by a rowspan cell above
+    bodyRows.each(function (rowIdx) {
+      if (!spanGrid[rowIdx]) { spanGrid[rowIdx] = []; }
+      var colIdx = 0;
+      $(this).find("th, td").each(function () {
+        // Advance past cells already occupied by previous rowspans
+        while (spanGrid[rowIdx][colIdx] !== undefined) { colIdx++; }
+        var text = escapeCell($(this).text());
+        var rs = parseInt($(this).attr("rowspan") || "1", 10);
+        var cs = parseInt($(this).attr("colspan") || "1", 10);
+        for (var ri = 0; ri < rs; ri++) {
+          if (!spanGrid[rowIdx + ri]) { spanGrid[rowIdx + ri] = []; }
+          for (var ci = 0; ci < cs; ci++) {
+            spanGrid[rowIdx + ri][colIdx + ci] = text;
+          }
+        }
+        colIdx += cs;
+      });
+    });
+    for (var r = 0; r < spanGrid.length; r++) {
+      if (spanGrid[r].length) { rows.push(spanGrid[r].join(",")); }
+    }
+
+    var csv = "\uFEFF" + rows.join("\r\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "export.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+</script>

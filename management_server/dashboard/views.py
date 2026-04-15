@@ -1,6 +1,7 @@
 import os
 import threading
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -10,16 +11,26 @@ from django.utils import timezone
 
 from dashboard.forms import SiteConfigurationForm
 from dashboard.models import DownloadRequest, InspectionCache, SiteConfiguration
-from dashboard.services import (
-    generate_csv_for_user,
-    refresh_inspection_cache,
-    refresh_snapshots,
-)
+from dashboard.services import generate_csv_for_user, refresh_inspection_cache, _REFRESH_RUNNING_FILE
 
 
 @login_required
 def home(request):
     return render(request, 'dashboard/home.html')
+
+
+def _cache_needs_refresh(cache):
+    """Return True if the cache is missing, stale, or lacks the 'changes' key."""
+    if cache is None:
+        return True
+    # Stale: cached when DB was empty
+    if cache.data.get('summary', {}).get('price_count', 0) == 0:
+        return True
+    # Missing 'changes' key (cache created before feature was added)
+    snapshots = cache.data.get('snapshots', [])
+    if snapshots and 'changes' not in snapshots[0]:
+        return True
+    return False
 
 
 def _get_inspection_interval():
@@ -61,60 +72,41 @@ def _next_cron_run():
 def inspection(request):
     cache = InspectionCache.objects.order_by('-created_at').first()
 
-    if cache is None:
-        return render(request, 'dashboard/inspection.html', {
-            'all_dates': [],
-            'selected_date': None,
-            'snapshots': [],
-            'prev_date': None,
-            'next_date': None,
-            'current_prices': [],
-            'prices_snapshot_ts': None,
-            'cache_age': None,
-            'no_cache': True,
-        })
+    # Detect if a refresh is currently running and when it started
+    refresh_started_at = None
+    try:
+        with open(_REFRESH_RUNNING_FILE) as f:
+            ts = float(f.read().strip())
+        refresh_started_at = datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+    except (OSError, ValueError):
+        pass
 
-    data = cache.data
+    last_duration = cache.duration_seconds if cache else None
+    manual_mode = _is_manual_inspection_enabled()
 
-    # Derive distinct dates from the cached snapshot list
-    all_dates = sorted(
-        {s['fetched_at'][:10] for s in data.get('snapshots', [])},
-        reverse=True,
-    )
+    next_refresh = None
+    if not refresh_started_at and not manual_mode:
+        next_refresh = _next_cron_run()
 
-    selected_date = request.GET.get('date')
-    if selected_date not in all_dates:
-        selected_date = all_dates[0] if all_dates else None
-
-    # Filter snapshots for the selected date
-    snapshots = [
-        s for s in data.get('snapshots', [])
-        if s['fetched_at'][:10] == selected_date
-    ] if selected_date else []
-
-    # Prev / next date navigation
-    prev_date = None
-    next_date = None
-    if selected_date and all_dates:
-        idx = all_dates.index(selected_date)
-        if idx > 0:
-            next_date = all_dates[idx - 1]  # more recent
-        if idx < len(all_dates) - 1:
-            prev_date = all_dates[idx + 1]  # older
-
-    current_prices = data.get('latest_prices', [])
-    prices_snapshot_ts = data.get('summary', {}).get('last_snapshot')
+    # Estimated completion:
+    # - if running:   start_time + last_duration
+    # - if idle:      next_refresh + last_duration
+    estimated_completion = None
+    if last_duration:
+        base = refresh_started_at if refresh_started_at else next_refresh
+        if base:
+            estimated_completion = base + timedelta(seconds=last_duration)
 
     context = {
-        'all_dates': all_dates,
-        'selected_date': selected_date,
-        'snapshots': snapshots,
-        'prev_date': prev_date,
-        'next_date': next_date,
-        'current_prices': current_prices,
-        'prices_snapshot_ts': prices_snapshot_ts,
-        'cache_age': cache.created_at,
-        'no_cache': False,
+        'data': cache.data if cache else None,
+        'last_updated': cache.created_at if cache else None,
+        'last_duration': last_duration,
+        'cache_warming': cache is None or _cache_needs_refresh(cache),
+        'refresh_started_at': refresh_started_at,
+        'next_refresh': next_refresh,
+        'estimated_completion': estimated_completion,
+        'inspection_interval': _get_inspection_interval(),
+        'manual_mode': manual_mode,
     }
     return render(request, 'dashboard/inspection.html', context)
 
@@ -209,23 +201,5 @@ def trigger_inspection(request):
     )
     thread.start()
     messages.success(request, "Inspection manuelle déclenchée.")
-    return redirect('inspection')
-
-
-@login_required
-def trigger_refresh_snapshots(request):
-    """Refresh the snapshot list from the Hudi table data (admin only)."""
-    if request.method != 'POST':
-        return redirect('inspection')
-
-    if request.user.role != 'admin':
-        return redirect('home')
-
-    thread = threading.Thread(
-        target=refresh_snapshots,
-        daemon=True,
-    )
-    thread.start()
-    messages.success(request, "Rafraîchissement des snapshots déclenché.")
     return redirect('inspection')
 

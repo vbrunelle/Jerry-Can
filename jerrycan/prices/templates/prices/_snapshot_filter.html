@@ -1,0 +1,157 @@
+{% comment %}
+Snapshot filter controls — included in price_list.html and station_detail.html.
+Expects context: snapshot_mode, snapshot_submode, snapshot_page, snapshot_total_pages,
+                 snapshot_displayed, snapshot_total, snapshot_too_many, max_snapshots,
+                 snapshot_until, snapshot_start, snapshot_end.
+{% endcomment %}
+<div class="d-flex align-items-center gap-2 flex-wrap mb-3" id="snapshot-filter">
+  <label class="form-label mb-0 me-1">Snapshots:</label>
+  <select id="snapshot-mode" class="form-select form-select-sm" style="width:auto">
+    <option value="latest" {% if snapshot_mode == 'latest' %}selected{% endif %}>Latest</option>
+    <option value="minute" {% if snapshot_mode == 'minute' %}selected{% endif %}>Per minute</option>
+    <option value="hour"   {% if snapshot_mode == 'hour' %}selected{% endif %}>Per hour</option>
+    <option value="day"    {% if snapshot_mode == 'day' %}selected{% endif %}>Per day</option>
+    <option value="week"   {% if snapshot_mode == 'week' %}selected{% endif %}>Per week</option>
+    <option value="month"  {% if snapshot_mode == 'month' %}selected{% endif %}>Per month</option>
+    <option value="year"   {% if snapshot_mode == 'year' %}selected{% endif %}>Per year</option>
+  </select>
+
+  {% if snapshot_mode != 'latest' %}
+  <select id="snapshot-submode" class="form-select form-select-sm" style="width:auto">
+    <option value="page"  {% if snapshot_submode == 'page' %}selected{% endif %}>All (paginated)</option>
+    <option value="until" {% if snapshot_submode == 'until' %}selected{% endif %}>Until date</option>
+    <option value="range" {% if snapshot_submode == 'range' %}selected{% endif %}>Date range</option>
+  </select>
+  {% endif %}
+
+  {% if snapshot_mode != 'latest' and snapshot_submode == 'until' %}
+  <input type="datetime-local" id="snapshot-until" class="form-control form-control-sm" style="width:auto" value="{{ snapshot_until }}">
+  <button type="button" id="snapshot-apply-until" class="btn btn-sm btn-primary">Apply</button>
+  {% endif %}
+
+  {% if snapshot_mode != 'latest' and snapshot_submode == 'range' %}
+  <input type="datetime-local" id="snapshot-start" class="form-control form-control-sm" style="width:auto" value="{{ snapshot_start }}" placeholder="Start">
+  <span class="text-muted small">to</span>
+  <input type="datetime-local" id="snapshot-end" class="form-control form-control-sm" style="width:auto" value="{{ snapshot_end }}" placeholder="End">
+  <button type="button" id="snapshot-apply-range" class="btn btn-sm btn-primary">Apply</button>
+  {% endif %}
+
+  {% if snapshot_total_pages > 1 %}
+  <div class="btn-group btn-group-sm" role="group">
+    {% if snapshot_page > 1 %}
+      <a class="btn btn-outline-secondary" href="javascript:void(0)" id="snapshot-prev">← Prev</a>
+    {% endif %}
+    <span class="btn btn-outline-secondary disabled">
+      Page {{ snapshot_page }} / {{ snapshot_total_pages }}
+    </span>
+    {% if snapshot_page < snapshot_total_pages %}
+      <a class="btn btn-outline-secondary" href="javascript:void(0)" id="snapshot-next">Next →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <span class="text-muted small">
+    {% if snapshot_too_many %}
+      {{ snapshot_total }} snapshots found (max {{ max_snapshots }})
+    {% else %}
+      Showing {{ snapshot_displayed }} of {{ snapshot_total }} snapshot{{ snapshot_total|pluralize }}
+    {% endif %}
+  </span>
+</div>
+
+<script>
+(function() {
+  function showSpinner() {
+    var pivot = document.getElementById('pivot-output');
+    if (pivot) {
+      pivot.innerHTML = '<div class="d-flex align-items-center justify-content-center py-5 text-muted">'
+        + '<div class="spinner-border me-2" role="status"></div>Loading pivot table\u2026</div>';
+    }
+  }
+
+  // Build a URL preserving current params then overriding with the given object.
+  function buildUrl(overrides) {
+    var url = new URL(window.location);
+    // Clear date/page params first to avoid stale values.
+    ['page', 'until', 'start', 'end', 'submode'].forEach(function(k) { url.searchParams.delete(k); });
+    Object.keys(overrides).forEach(function(k) {
+      if (overrides[k] !== null && overrides[k] !== '') {
+        url.searchParams.set(k, overrides[k]);
+      } else {
+        url.searchParams.delete(k);
+      }
+    });
+    return url.toString();
+  }
+
+  // Mode dropdown
+  document.getElementById('snapshot-mode').addEventListener('change', function() {
+    showSpinner();
+    window.location = buildUrl({mode: this.value});
+  });
+
+  // Sub-mode dropdown (time-unit modes only)
+  var subSel = document.getElementById('snapshot-submode');
+  if (subSel) {
+    subSel.addEventListener('change', function() {
+      showSpinner();
+      var params = {mode: document.getElementById('snapshot-mode').value};
+      if (this.value !== 'page') {
+        params.submode = this.value;
+      }
+      window.location = buildUrl(params);
+    });
+  }
+
+  // "Until" apply button
+  var applyUntil = document.getElementById('snapshot-apply-until');
+  if (applyUntil) {
+    applyUntil.addEventListener('click', function() {
+      var val = document.getElementById('snapshot-until').value;
+      if (!val) return;
+      showSpinner();
+      window.location = buildUrl({mode: document.getElementById('snapshot-mode').value, until: val});
+    });
+  }
+
+  // "Range" apply button
+  var applyRange = document.getElementById('snapshot-apply-range');
+  if (applyRange) {
+    applyRange.addEventListener('click', function() {
+      var s = document.getElementById('snapshot-start').value;
+      var e = document.getElementById('snapshot-end').value;
+      if (!s || !e) return;
+      showSpinner();
+      window.location = buildUrl({mode: document.getElementById('snapshot-mode').value, start: s, end: e});
+    });
+  }
+
+  // Pagination
+  var prevBtn = document.getElementById('snapshot-prev');
+  if (prevBtn) {
+    prevBtn.addEventListener('click', function() {
+      showSpinner();
+      window.location = buildUrl({
+        mode: document.getElementById('snapshot-mode').value,
+        page: {{ snapshot_page }} - 1,
+        until: '{{ snapshot_until }}' || null,
+        start: '{{ snapshot_start }}' || null,
+        end: '{{ snapshot_end }}' || null,
+      });
+    });
+  }
+  var nextBtn = document.getElementById('snapshot-next');
+  if (nextBtn) {
+    nextBtn.addEventListener('click', function() {
+      showSpinner();
+      window.location = buildUrl({
+        mode: document.getElementById('snapshot-mode').value,
+        page: {{ snapshot_page }} + 1,
+        until: '{{ snapshot_until }}' || null,
+        start: '{{ snapshot_start }}' || null,
+        end: '{{ snapshot_end }}' || null,
+      });
+    });
+  }
+})();
+</script>
