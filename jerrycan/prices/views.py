@@ -1,5 +1,6 @@
 import math
 import os
+import uuid
 from datetime import datetime
 
 from django.contrib.admin.views.decorators import staff_member_required
@@ -448,9 +449,8 @@ def import_analysis(request):
     if request.method == 'POST' and request.FILES.get('file'):
         uploaded = request.FILES['file']
         export_dir = _get_export_dir()
-        # Sanitise: use only the base name to prevent directory traversal
-        safe_name = os.path.basename(uploaded.name)
-        dest = os.path.join(export_dir, f'import_{safe_name}')
+        # Use a UUID-based filename to avoid any path injection from user input
+        dest = os.path.join(export_dir, f'import_{uuid.uuid4().hex}.json.gz')
         with open(dest, 'wb') as f:
             for chunk in uploaded.chunks():
                 f.write(chunk)
