@@ -448,7 +448,9 @@ def import_analysis(request):
     if request.method == 'POST' and request.FILES.get('file'):
         uploaded = request.FILES['file']
         export_dir = _get_export_dir()
-        dest = os.path.join(export_dir, f'import_{uploaded.name}')
+        # Sanitise: use only the base name to prevent directory traversal
+        safe_name = os.path.basename(uploaded.name)
+        dest = os.path.join(export_dir, f'import_{safe_name}')
         with open(dest, 'wb') as f:
             for chunk in uploaded.chunks():
                 f.write(chunk)
@@ -480,10 +482,16 @@ def download_export(request, task_id):
                              status=AnalysisTransferTask.Status.COMPLETED)
     if not task.file_path or not os.path.isfile(task.file_path):
         return JsonResponse({'error': 'File not found'}, status=404)
+    # Verify the file is within the export directory to prevent path traversal
+    export_dir = os.path.realpath(_get_export_dir())
+    real_path = os.path.realpath(task.file_path)
+    if not real_path.startswith(export_dir + os.sep):
+        return JsonResponse({'error': 'Invalid file path'}, status=400)
+    fh = open(real_path, 'rb')  # noqa: SIM115 — FileResponse closes this
     return FileResponse(
-        open(task.file_path, 'rb'),
+        fh,
         as_attachment=True,
-        filename=os.path.basename(task.file_path),
+        filename=os.path.basename(real_path),
     )
 
 

@@ -145,8 +145,7 @@
 {% for task in transfer_tasks %}
 {% if task.status == 'pending' or task.status == 'running' %}
 <script>
-(function() {
-  var taskId = {{ task.pk }};
+(function(taskId) {
   var interval = setInterval(function() {
     fetch("{% url 'prices:transfer_task_status_api' task.pk %}")
       .then(function(r) { return r.json(); })
@@ -157,7 +156,7 @@
         }
       });
   }, 2000);
-})();
+})({{ task.pk }});
 </script>
 {% endif %}
 {% endfor %}

@@ -43,14 +43,13 @@
 {% if task.status == 'pending' or task.status == 'running' %}
 <script>
 (function() {
-  setInterval(function() {
+  var interval = setInterval(function() {
     fetch("{% url 'prices:transfer_task_status_api' task.pk %}")
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (data.status === 'completed') {
+        if (data.status === 'completed' || data.status === 'error') {
+          clearInterval(interval);
           window.location.href = "{% url 'prices:import_status' task.pk %}";
-        } else if (data.status === 'error') {
-          location.reload();
         }
       });
   }, 2000);
