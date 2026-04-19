@@ -1,14 +1,18 @@
 import gzip
 import json
+import os
 import threading
 import time
 
 import pandas as pd
 import requests
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models, transaction
+from django.db.models import Case, When, Value
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 
 class UserProfile(models.Model):
@@ -211,3 +215,266 @@ class Analysis(models.Model):
             records.append(record)
 
         return pd.DataFrame(records)
+
+
+def _get_export_dir():
+    """Return the directory for storing export/import files, creating it if needed."""
+    export_dir = getattr(settings, 'ANALYSIS_EXPORT_DIR', None)
+    if not export_dir:
+        export_dir = os.path.join(settings.BASE_DIR, 'exports')
+    os.makedirs(export_dir, exist_ok=True)
+    return export_dir
+
+
+class AnalysisTransferTask(models.Model):
+    class TaskType(models.TextChoices):
+        EXPORT = 'export', 'Export'
+        IMPORT = 'import', 'Import'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        RUNNING = 'running', 'Running'
+        COMPLETED = 'completed', 'Completed'
+        ERROR = 'error', 'Error'
+
+    task_type = models.CharField(max_length=6, choices=TaskType.choices)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    analysis = models.ForeignKey(
+        Analysis, on_delete=models.CASCADE, related_name='transfer_tasks',
+        null=True, blank=True,
+    )
+    file_path = models.CharField(max_length=512, blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    # --- Export ---------------------------------------------------------------
+
+    def start_export(self):
+        """Launch export in a background thread."""
+        thread = threading.Thread(target=self._run_export, daemon=True,
+                                  name=f"export-{self.pk}")
+        thread.start()
+        return thread
+
+    def _run_export(self):
+        try:
+            self.status = self.Status.RUNNING
+            self.save(update_fields=['status'])
+            self._do_export()
+            self.status = self.Status.COMPLETED
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'completed_at'])
+        except Exception as exc:
+            self.status = self.Status.ERROR
+            self.error_message = str(exc)[:2000]
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'error_message', 'completed_at'])
+
+    def _do_export(self):
+        analysis = self.analysis
+        export_dir = _get_export_dir()
+        filepath = os.path.join(export_dir, f'analysis_{analysis.pk}_{self.pk}.json.gz')
+
+        with gzip.open(filepath, 'wt', encoding='utf-8') as f:
+            f.write('{"version":1,')
+
+            # Analysis metadata
+            f.write('"analysis":')
+            json.dump({
+                'update_frequency': analysis.update_frequency,
+                'data_source_url': analysis.data_source_url,
+                'active': analysis.active,
+                'run_automatically': analysis.run_automatically,
+                'max_snapshots': analysis.max_snapshots,
+            }, f)
+
+            # Fuels used by this analysis
+            fuel_ids = (Price.objects
+                        .filter(snapshot__analysis=analysis)
+                        .values_list('fuel_id', flat=True)
+                        .distinct())
+            fuels = list(Fuel.objects.filter(pk__in=fuel_ids).values('id', 'name'))
+            f.write(',"fuels":')
+            json.dump(fuels, f)
+
+            # Stations
+            f.write(',"stations":[')
+            first = True
+            for st in (Station.objects.filter(analysis=analysis)
+                       .values('id', 'name', 'city', 'region', 'adress',
+                               'longitude', 'latitude')
+                       .iterator(chunk_size=2000)):
+                if not first:
+                    f.write(',')
+                json.dump(st, f)
+                first = False
+            f.write(']')
+
+            # Snapshots
+            f.write(',"snapshots":[')
+            first = True
+            for snap in (Snapshot.objects.filter(analysis=analysis)
+                         .values('id', 'timestamp', 'status')
+                         .iterator(chunk_size=2000)):
+                if not first:
+                    f.write(',')
+                snap['timestamp'] = snap['timestamp'].isoformat()
+                json.dump(snap, f)
+                first = False
+            f.write(']')
+
+            # Prices – streamed in chunks
+            f.write(',"prices":[')
+            first = True
+            for pr in (Price.objects.filter(snapshot__analysis=analysis)
+                       .values('station_id', 'fuel_id', 'price', 'snapshot_id')
+                       .iterator(chunk_size=5000)):
+                if not first:
+                    f.write(',')
+                pr['price'] = float(pr['price'])
+                json.dump(pr, f)
+                first = False
+            f.write(']')
+
+            f.write('}')
+
+        self.file_path = filepath
+        self.save(update_fields=['file_path'])
+
+    # --- Import ---------------------------------------------------------------
+
+    def start_import(self):
+        """Launch import in a background thread."""
+        thread = threading.Thread(target=self._run_import, daemon=True,
+                                  name=f"import-{self.pk}")
+        thread.start()
+        return thread
+
+    def _run_import(self):
+        try:
+            self.status = self.Status.RUNNING
+            self.save(update_fields=['status'])
+            self._do_import()
+            self.status = self.Status.COMPLETED
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'completed_at'])
+        except Exception as exc:
+            self.status = self.Status.ERROR
+            self.error_message = str(exc)[:2000]
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'error_message', 'completed_at'])
+
+    def _do_import(self):
+        filepath = self.file_path
+        with gzip.open(filepath, 'rt', encoding='utf-8') as f:
+            data = json.load(f)
+
+        version = data.get('version', 1)
+        if version != 1:
+            raise ValueError(f"Unsupported export version: {version}")
+
+        analysis_data = data['analysis']
+        # Don't auto-run on import
+        analysis_data['run_automatically'] = False
+
+        with transaction.atomic():
+            analysis = Analysis(
+                update_frequency=analysis_data.get('update_frequency', 5),
+                data_source_url=analysis_data.get('data_source_url', ''),
+                active=analysis_data.get('active', False),
+                run_automatically=False,
+                max_snapshots=analysis_data.get('max_snapshots', 100),
+            )
+            # Use super().save() to avoid the custom save logic
+            models.Model.save(analysis)
+
+        self.analysis = analysis
+        self.save(update_fields=['analysis'])
+
+        # Fuels: get_or_create by name, build ID mapping
+        fuel_id_map = {}
+        for fuel_data in data.get('fuels', []):
+            fuel, _ = Fuel.objects.get_or_create(name=fuel_data['name'])
+            fuel_id_map[fuel_data['id']] = fuel.pk
+
+        # Stations: bulk_create, build ID mapping
+        station_id_map = {}
+        station_objs = []
+        for s in data.get('stations', []):
+            station_objs.append(Station(
+                name=s['name'],
+                city=s['city'],
+                region=s['region'],
+                adress=s['adress'],
+                longitude=s['longitude'],
+                latitude=s['latitude'],
+                analysis=analysis,
+            ))
+        BATCH = 2000
+        idx = 0
+        station_data_list = data.get('stations', [])
+        for i in range(0, len(station_objs), BATCH):
+            created = Station.objects.bulk_create(station_objs[i:i + BATCH])
+            for j, obj in enumerate(created):
+                old_id = station_data_list[idx]['id']
+                station_id_map[old_id] = obj.pk
+                idx += 1
+
+        # Snapshots: bulk_create, then fix timestamps
+        snapshot_id_map = {}
+        snapshot_objs = []
+        snapshot_timestamps = []
+        for snap in data.get('snapshots', []):
+            snapshot_objs.append(Snapshot(
+                analysis=analysis,
+                status=snap.get('status', Snapshot.Status.PROCESSED),
+            ))
+            snapshot_timestamps.append((snap['id'], snap['timestamp']))
+
+        idx = 0
+        for i in range(0, len(snapshot_objs), BATCH):
+            created = Snapshot.objects.bulk_create(snapshot_objs[i:i + BATCH])
+            for j, obj in enumerate(created):
+                old_id = snapshot_timestamps[idx][0]
+                snapshot_id_map[old_id] = obj.pk
+                idx += 1
+
+        # Fix snapshot timestamps using bulk update
+        ts_cases = []
+        pk_list = []
+        for old_id, ts_str in snapshot_timestamps:
+            new_pk = snapshot_id_map[old_id]
+            pk_list.append(new_pk)
+            ts_val = timezone.datetime.fromisoformat(ts_str)
+            if timezone.is_naive(ts_val):
+                ts_val = timezone.make_aware(ts_val)
+            ts_cases.append(When(pk=new_pk, then=Value(ts_val)))
+
+        if ts_cases:
+            for i in range(0, len(pk_list), BATCH):
+                batch_pks = pk_list[i:i + BATCH]
+                batch_cases = ts_cases[i:i + BATCH]
+                Snapshot.objects.filter(pk__in=batch_pks).update(
+                    timestamp=Case(*batch_cases, default='timestamp')
+                )
+
+        # Prices: bulk_create in batches
+        price_batch = []
+        for pr in data.get('prices', []):
+            mapped_station = station_id_map.get(pr['station_id'])
+            mapped_fuel = fuel_id_map.get(pr['fuel_id'])
+            mapped_snapshot = snapshot_id_map.get(pr['snapshot_id'])
+            if mapped_station is None or mapped_fuel is None or mapped_snapshot is None:
+                continue
+            price_batch.append(Price(
+                station_id=mapped_station,
+                fuel_id=mapped_fuel,
+                snapshot_id=mapped_snapshot,
+                price=pr['price'],
+            ))
+            if len(price_batch) >= BATCH:
+                Price.objects.bulk_create(price_batch)
+                price_batch = []
+        if price_batch:
+            Price.objects.bulk_create(price_batch)

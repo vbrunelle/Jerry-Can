@@ -12,6 +12,11 @@ urlpatterns = [
     path("analyses/<int:pk>/", views.AnalysisDetailView.as_view(), name="analysis_detail"),
     path("analyses/<int:pk>/edit/", views.AnalysisUpdateView.as_view(), name="analysis_edit"),
     path("analyses/<int:pk>/snapshot/", views.force_snapshot, name="force_snapshot"),
+    path("analyses/<int:pk>/export/", views.export_analysis, name="export_analysis"),
+    path("analyses/import/", views.import_analysis, name="import_analysis"),
+    path("analyses/import/<int:task_id>/status/", views.import_status, name="import_status"),
+    path("analyses/export/<int:task_id>/download/", views.download_export, name="download_export"),
+    path("api/transfer/<int:task_id>/status/", views.transfer_task_status_api, name="transfer_task_status_api"),
 
     path("stations/", views.StationListView.as_view(), name="station_list"),
     path("stations/<int:pk>/", views.StationDetailView.as_view(), name="station_detail"),

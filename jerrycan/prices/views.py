@@ -1,4 +1,5 @@
 import math
+import os
 from datetime import datetime
 
 from django.contrib.admin.views.decorators import staff_member_required
@@ -6,7 +7,7 @@ from django.contrib.auth.views import PasswordChangeView
 from django.db import connection
 from django.db.models import Count, Max
 from django.db.models.functions import TruncMinute, TruncHour, TruncDay, TruncWeek, TruncMonth, TruncYear
-from django.http import JsonResponse
+from django.http import FileResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils import timezone
@@ -14,7 +15,8 @@ from django.utils.decorators import method_decorator
 from django.views.generic import CreateView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import AnalysisForm
-from .models import Analysis, Price, Snapshot, Station
+from .models import (Analysis, AnalysisTransferTask, Price, Snapshot, Station,
+                     _get_export_dir)
 
 TRUNC_MAP = {
     'minute': TruncMinute,
@@ -264,6 +266,11 @@ class AnalysisDetailView(DetailView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         ctx['storage_estimate'] = _analysis_storage_estimate(self.object)
+        ctx['transfer_tasks'] = (
+            AnalysisTransferTask.objects
+            .filter(analysis=self.object)
+            .order_by('-created_at')[:10]
+        )
         return ctx
 
 
@@ -417,3 +424,78 @@ def station_prices_api(request, pk):
     )
     return JsonResponse({'data': _prices_to_list(prices_qs)})
 
+
+# ---------------------------------------------------------------------------
+# Export / Import views
+# ---------------------------------------------------------------------------
+
+@staff_member_required
+def export_analysis(request, pk):
+    """Start a background export of an analysis."""
+    analysis = get_object_or_404(Analysis, pk=pk)
+    if request.method == 'POST':
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.EXPORT,
+            analysis=analysis,
+        )
+        task.start_export()
+    return redirect('prices:analysis_detail', pk=pk)
+
+
+@staff_member_required
+def import_analysis(request):
+    """Accept an uploaded export file and start a background import."""
+    if request.method == 'POST' and request.FILES.get('file'):
+        uploaded = request.FILES['file']
+        export_dir = _get_export_dir()
+        dest = os.path.join(export_dir, f'import_{uploaded.name}')
+        with open(dest, 'wb') as f:
+            for chunk in uploaded.chunks():
+                f.write(chunk)
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            file_path=dest,
+        )
+        task.start_import()
+        return redirect('prices:import_status', task_id=task.pk)
+    return redirect('prices:analysis_list')
+
+
+@staff_member_required
+def import_status(request, task_id):
+    """Simple page showing import task status. Redirects to analysis on completion."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id,
+                             task_type=AnalysisTransferTask.TaskType.IMPORT)
+    if task.status == AnalysisTransferTask.Status.COMPLETED and task.analysis:
+        return redirect('prices:analysis_detail', pk=task.analysis.pk)
+    from django.shortcuts import render
+    return render(request, 'prices/import_status.html', {'task': task})
+
+
+@staff_member_required
+def download_export(request, task_id):
+    """Download the exported file."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id,
+                             task_type=AnalysisTransferTask.TaskType.EXPORT,
+                             status=AnalysisTransferTask.Status.COMPLETED)
+    if not task.file_path or not os.path.isfile(task.file_path):
+        return JsonResponse({'error': 'File not found'}, status=404)
+    return FileResponse(
+        open(task.file_path, 'rb'),
+        as_attachment=True,
+        filename=os.path.basename(task.file_path),
+    )
+
+
+@staff_member_required
+def transfer_task_status_api(request, task_id):
+    """JSON endpoint to poll the status of a transfer task."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id)
+    data = {
+        'id': task.pk,
+        'task_type': task.task_type,
+        'status': task.status,
+        'error_message': task.error_message,
+        'analysis_id': task.analysis_id,
+    }
+    return JsonResponse(data)
