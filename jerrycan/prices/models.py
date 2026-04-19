@@ -273,6 +273,8 @@ class AnalysisTransferTask(models.Model):
 
     def _do_export(self):
         analysis = self.analysis
+        if analysis is None:
+            raise ValueError("No analysis associated with this export task")
         export_dir = _get_export_dir()
         filepath = os.path.join(export_dir, f'analysis_{analysis.pk}_{self.pk}.json.gz')
 
