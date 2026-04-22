@@ -2,6 +2,8 @@ import math
 import os
 import uuid
 from datetime import datetime
+import json
+import tempfile
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
@@ -13,10 +15,11 @@ from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import CreateView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import AnalysisForm
-from .models import (Analysis, AnalysisTransferTask, Price, Snapshot, Station,
+from .models import (Analysis, AnalysisTransferTask, ChunkedUpload, Price, Snapshot, Station,
                      _get_export_dir)
 
 TRUNC_MAP = {
@@ -424,6 +427,102 @@ def station_prices_api(request, pk):
         .order_by('-snapshot__timestamp')
     )
     return JsonResponse({'data': _prices_to_list(prices_qs)})
+
+
+# ---------------------------------------------------------------------------
+# Chunked Upload API
+# ---------------------------------------------------------------------------
+
+@staff_member_required
+def upload_chunk(request):
+    """Accept a chunk of a file upload."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    try:
+        upload_id = request.POST.get('uploadId', '')
+        chunk_number = int(request.POST.get('chunkNumber', -1))
+        total_chunks = int(request.POST.get('totalChunks', -1))
+        chunk_file = request.FILES.get('chunk')
+
+        if not all([upload_id, chunk_number >= 0, total_chunks > 0, chunk_file]):
+            return JsonResponse({'error': 'Missing required fields'}, status=400)
+
+        # Get or create chunked upload tracker
+        chunked_upload, created = ChunkedUpload.objects.get_or_create(
+            upload_id=upload_id,
+            defaults={
+                'filename': chunk_file.name,
+                'total_chunks': total_chunks,
+                'temp_dir': os.path.join(tempfile.gettempdir(), f'upload_{upload_id}'),
+            }
+        )
+
+        # Validate total_chunks consistency
+        if chunked_upload.total_chunks != total_chunks:
+            return JsonResponse({'error': 'Chunk count mismatch'}, status=400)
+
+        # Save chunk
+        os.makedirs(chunked_upload.temp_dir, exist_ok=True)
+        chunk_path = chunked_upload.get_chunk_path(chunk_number)
+        with open(chunk_path, 'wb') as f:
+            for block in chunk_file.chunks():
+                f.write(block)
+
+        # Update received count
+        chunked_upload.received_chunks = chunk_number + 1
+        chunked_upload.save(update_fields=['received_chunks'])
+
+        return JsonResponse({
+            'status': 'ok',
+            'uploadId': upload_id,
+            'chunk': chunk_number,
+            'progress': chunked_upload.received_chunks / chunked_upload.total_chunks * 100,
+        })
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@staff_member_required
+def upload_complete(request):
+    """Finalize the upload and start the import."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        upload_id = data.get('uploadId', '')
+
+        if not upload_id:
+            return JsonResponse({'error': 'Missing uploadId'}, status=400)
+
+        # Get the chunked upload
+        chunked_upload = get_object_or_404(ChunkedUpload, upload_id=upload_id)
+
+        if not chunked_upload.all_chunks_received():
+            return JsonResponse({
+                'error': f'Not all chunks received ({chunked_upload.received_chunks}/{chunked_upload.total_chunks})'
+            }, status=400)
+
+        # Assemble the file
+        final_path = chunked_upload.assemble_file()
+
+        # Create import task
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            file_path=final_path,
+        )
+        task.start_import()
+
+        return JsonResponse({
+            'status': 'import_started',
+            'taskId': task.pk,
+            'filePath': final_path,
+        })
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 
 
 # ---------------------------------------------------------------------------

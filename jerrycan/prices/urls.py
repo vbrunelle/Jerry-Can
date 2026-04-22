@@ -28,4 +28,6 @@ urlpatterns = [
 
     path("api/prices/", views.prices_api, name="prices_api"),
     path("api/stations/<int:pk>/prices/", views.station_prices_api, name="station_prices_api"),
+    path("api/upload/chunk/", views.upload_chunk, name="upload_chunk"),
+    path("api/upload/complete/", views.upload_complete, name="upload_complete"),
 ]

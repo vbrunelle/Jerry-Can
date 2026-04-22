@@ -11,11 +11,15 @@ import random
 import shutil
 import tempfile
 import time
+from unittest.mock import patch
 from decimal import Decimal
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 
 from prices.models import (
     Analysis, AnalysisTransferTask, Fuel, Price, Snapshot, Station,
@@ -243,6 +247,36 @@ class ExportImportTests(TransactionTestCase):
             Snapshot.objects.filter(analysis=new_analysis).count(), 1
         )
 
+    def test_import_preserves_snapshot_timestamps_and_count(self):
+        # Add a second snapshot with a distinct timestamp, then export/import.
+        second_snapshot = Snapshot.objects.create(
+            analysis=self.analysis,
+            status=Snapshot.Status.PROCESSED,
+        )
+        ts1 = timezone.now() - timedelta(days=3, hours=2)
+        ts2 = timezone.now() - timedelta(days=1, minutes=30)
+        Snapshot.objects.filter(pk=self.snapshot.pk).update(timestamp=ts1)
+        Snapshot.objects.filter(pk=second_snapshot.pk).update(timestamp=ts2)
+
+        Price.objects.create(
+            station=self.station,
+            fuel=self.fuel1,
+            snapshot=second_snapshot,
+            price=Decimal("201.1"),
+        )
+
+        import_task = self._do_export_import()
+        new_analysis = import_task.analysis
+        imported = list(
+            Snapshot.objects.filter(analysis=new_analysis)
+            .order_by('timestamp')
+            .values_list('timestamp', flat=True)
+        )
+
+        self.assertEqual(len(imported), 2)
+        self.assertEqual(imported[0], ts1)
+        self.assertEqual(imported[1], ts2)
+
     def test_import_recreates_prices(self):
         import_task = self._do_export_import()
         new_analysis = import_task.analysis
@@ -326,6 +360,111 @@ class ExportImportTests(TransactionTestCase):
         data = response.json()
         self.assertEqual(data["status"], "running")
         self.assertEqual(data["task_type"], "export")
+
+    def test_analyses_page_includes_chunked_upload_ui(self):
+        user = User.objects.create_superuser("admin", "a@b.com", "pass")
+        self.client.force_login(user)
+        response = self.client.get("/analyses/")
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8")
+        self.assertIn("id=\"import-btn\"", content)
+        self.assertIn("/static/prices/chunked-upload.js", content)
+        self.assertIn("/analyses/import/", content)
+
+    def test_chunk_upload_endpoints_require_staff(self):
+        file_chunk = SimpleUploadedFile("chunk.gz", b"abc", content_type="application/gzip")
+        response = self.client.post(
+            "/api/upload/chunk/",
+            data={
+                "uploadId": "u1",
+                "chunkNumber": "0",
+                "totalChunks": "1",
+                "chunk": file_chunk,
+            },
+            follow=False,
+        )
+        self.assertIn(response.status_code, [302, 301])
+        self.assertIn("login", response.url)
+
+        response = self.client.post(
+            "/api/upload/complete/",
+            data=json.dumps({"uploadId": "u1"}),
+            content_type="application/json",
+            follow=False,
+        )
+        self.assertIn(response.status_code, [302, 301])
+        self.assertIn("login", response.url)
+
+    def test_chunk_upload_complete_creates_import_task(self):
+        user = User.objects.create_superuser("admin", "a@b.com", "pass")
+        self.client.force_login(user)
+
+        payload = {
+            "version": 1,
+            "analysis": {
+                "update_frequency": 5,
+                "data_source_url": "http://example.com/data.geojson.gz",
+                "active": False,
+                "run_automatically": False,
+                "max_snapshots": 10,
+            },
+            "fuels": [{"id": 1, "name": "Régulier"}],
+            "stations": [
+                {
+                    "id": 1,
+                    "name": "Station A",
+                    "city": "Montreal",
+                    "region": "Montreal",
+                    "adress": "1 Rue Test",
+                    "longitude": -73.5,
+                    "latitude": 45.5,
+                }
+            ],
+            "snapshots": [
+                {"id": 1, "timestamp": "2026-01-01T00:00:00+00:00", "status": "processed"}
+            ],
+            "prices": [{"station_id": 1, "fuel_id": 1, "price": 199.9, "snapshot_id": 1}],
+        }
+        gz_data = gzip.compress(json.dumps(payload).encode("utf-8"))
+        mid = max(1, len(gz_data) // 2)
+        upload_id = "test-upload-1"
+
+        response = self.client.post(
+            "/api/upload/chunk/",
+            data={
+                "uploadId": upload_id,
+                "chunkNumber": "0",
+                "totalChunks": "2",
+                "chunk": SimpleUploadedFile("part0.gz", gz_data[:mid], content_type="application/gzip"),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(
+            "/api/upload/chunk/",
+            data={
+                "uploadId": upload_id,
+                "chunkNumber": "1",
+                "totalChunks": "2",
+                "chunk": SimpleUploadedFile("part1.gz", gz_data[mid:], content_type="application/gzip"),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        with patch.object(AnalysisTransferTask, 'start_import', return_value=None):
+            response = self.client.post(
+                "/api/upload/complete/",
+                data=json.dumps({"uploadId": upload_id}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "import_started")
+        self.assertIn("taskId", data)
+
+        task = AnalysisTransferTask.objects.get(pk=data["taskId"])
+        self.assertEqual(task.task_type, AnalysisTransferTask.TaskType.IMPORT)
+        self.assertTrue(task.file_path.endswith(".json.gz"))
 
 
 # ---------------------------------------------------------------------------

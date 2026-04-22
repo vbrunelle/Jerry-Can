@@ -9,7 +9,6 @@ import requests
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models, transaction
-from django.db.models import Case, When, Value
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -426,39 +425,38 @@ class AnalysisTransferTask(models.Model):
         # Snapshots: bulk_create, then fix timestamps
         snapshot_id_map = {}
         snapshot_objs = []
-        snapshot_timestamps = []
+        snapshot_data_list = data.get('snapshots', [])
         for snap in data.get('snapshots', []):
             snapshot_objs.append(Snapshot(
                 analysis=analysis,
                 status=snap.get('status', Snapshot.Status.PROCESSED),
             ))
-            snapshot_timestamps.append((snap['id'], snap['timestamp']))
 
+        created_snapshots = []
         idx = 0
         for i in range(0, len(snapshot_objs), BATCH):
             created = Snapshot.objects.bulk_create(snapshot_objs[i:i + BATCH])
+            created_snapshots.extend(created)
             for j, obj in enumerate(created):
-                old_id = snapshot_timestamps[idx][0]
+                old_id = snapshot_data_list[idx]['id']
                 snapshot_id_map[old_id] = obj.pk
                 idx += 1
 
-        # Fix snapshot timestamps using bulk update
-        ts_cases = []
-        pk_list = []
-        for old_id, ts_str in snapshot_timestamps:
-            new_pk = snapshot_id_map[old_id]
-            pk_list.append(new_pk)
+        # Fix snapshot timestamps using model-level bulk_update.
+        # This preserves original snapshot capture time instead of import time.
+        for obj, snap in zip(created_snapshots, snapshot_data_list):
+            ts_str = snap['timestamp']
             ts_val = timezone.datetime.fromisoformat(ts_str)
             if timezone.is_naive(ts_val):
                 ts_val = timezone.make_aware(ts_val)
-            ts_cases.append(When(pk=new_pk, then=Value(ts_val)))
+            obj.timestamp = ts_val
 
-        if ts_cases:
-            for i in range(0, len(pk_list), BATCH):
-                batch_pks = pk_list[i:i + BATCH]
-                batch_cases = ts_cases[i:i + BATCH]
-                Snapshot.objects.filter(pk__in=batch_pks).update(
-                    timestamp=Case(*batch_cases, default='timestamp')
+        if created_snapshots:
+            for i in range(0, len(created_snapshots), BATCH):
+                Snapshot.objects.bulk_update(
+                    created_snapshots[i:i + BATCH],
+                    ['timestamp'],
+                    batch_size=BATCH,
                 )
 
         # Prices: bulk_create in batches
@@ -480,3 +478,65 @@ class AnalysisTransferTask(models.Model):
                 price_batch = []
         if price_batch:
             Price.objects.bulk_create(price_batch)
+
+
+class ChunkedUpload(models.Model):
+    """Track chunked file uploads in progress."""
+    class Status(models.TextChoices):
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        ERROR = 'error', 'Error'
+
+    upload_id = models.CharField(max_length=64, unique=True, db_index=True)
+    filename = models.CharField(max_length=256)
+    total_chunks = models.PositiveIntegerField()
+    received_chunks = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.IN_PROGRESS)
+    temp_dir = models.CharField(max_length=512)
+    final_path = models.CharField(max_length=512, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def get_chunk_path(self, chunk_number):
+        """Return the path for a specific chunk file."""
+        return os.path.join(self.temp_dir, f'chunk_{chunk_number}')
+
+    def all_chunks_received(self):
+        """Check if all chunks have been received."""
+        return self.received_chunks >= self.total_chunks
+
+    def assemble_file(self):
+        """Assemble all chunks into the final file."""
+        export_dir = _get_export_dir()
+        final_path = os.path.join(export_dir, f'import_{self.upload_id}.json.gz')
+
+        with open(final_path, 'wb') as out_file:
+            for i in range(self.total_chunks):
+                chunk_path = self.get_chunk_path(i)
+                if not os.path.exists(chunk_path):
+                    raise FileNotFoundError(f"Chunk {i} missing at {chunk_path}")
+                with open(chunk_path, 'rb') as chunk_file:
+                    out_file.write(chunk_file.read())
+
+        self.final_path = final_path
+        self.status = self.Status.COMPLETED
+        self.completed_at = timezone.now()
+        self.save(update_fields=['final_path', 'status', 'completed_at'])
+
+        # Clean up temp directory
+        try:
+            import shutil
+            shutil.rmtree(self.temp_dir)
+        except Exception:
+            pass
+
+        return final_path
+
+    def cleanup(self):
+        """Remove temporary files."""
+        try:
+            import shutil
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+        except Exception:
+            pass

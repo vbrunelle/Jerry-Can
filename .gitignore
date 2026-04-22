@@ -108,3 +108,9 @@ cython_debug/
 
 # Docker
 staticfiles/
+
+# Chunked upload temporary files
+uploads/
+tmp/uploads/
+**/chunk_*
+temp_chunk*
