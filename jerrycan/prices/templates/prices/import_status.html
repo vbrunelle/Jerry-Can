@@ -1,0 +1,168 @@
+{% extends "prices/base.html" %}
+{% block title %}Task Status{% endblock %}
+{% block nav_analysis %}active{% endblock %}
+{% block page_title %}Task Status{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-3">Task</dt>
+      <dd class="col-9">#{{ task.pk }} – {{ task.get_task_type_display }}</dd>
+      <dt class="col-3">Status</dt>
+      <dd class="col-9" id="task-status">
+        {% if task.status == 'completed' %}<span class="badge bg-success-lt">Completed</span>
+        {% elif task.status == 'running' %}<span class="badge bg-warning-lt">Running…</span>
+        {% elif task.status == 'pending' %}<span class="badge bg-info-lt">Pending</span>
+        {% elif task.status == 'cancelled' %}<span class="badge bg-secondary-lt">Cancelled</span>
+        {% elif task.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
+        {% endif %}
+      </dd>
+      <dt class="col-3">Current step</dt>
+      <dd class="col-9" id="task-status-detail">{{ task.status_detail|default:"Waiting to start" }}</dd>
+      {% if task.status == 'error' and task.error_message %}
+      <dt class="col-3">Error</dt>
+      <dd class="col-9 text-danger" id="task-error">{{ task.error_message }}</dd>
+      {% else %}
+      <dt class="col-3 d-none" id="task-error-label">Error</dt>
+      <dd class="col-9 text-danger d-none" id="task-error"></dd>
+      {% endif %}
+      <dt class="col-3">Created</dt>
+      <dd class="col-9">{{ task.created_at|date:"Y-m-d H:i:s" }}</dd>
+    </dl>
+    <div class="mt-3">
+      <div class="progress">
+        <div class="progress-bar" id="task-progress" role="progressbar" style="width: {{ task.progress_percent }}%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ task.progress_percent }}">{{ task.progress_percent }}%</div>
+      </div>
+      <p class="text-muted small mt-2" id="task-progress-text">The import is running in the background. Progress updates automatically.</p>
+    </div>
+
+    <div class="mt-3">
+      <h4 class="mb-2">Activity log</h4>
+      <pre id="task-log" class="p-3 border rounded" style="max-height: 340px; overflow: auto; white-space: pre-wrap; background: #f8fafc; color: #0f172a;">{{ task.activity_log|default:"No log entries yet." }}</pre>
+    </div>
+
+    {% if task.status == 'pending' or task.status == 'running' %}
+    <div class="mt-3" id="stop-task-container">
+      <form method="post" action="{% url 'prices:cancel_transfer_task' task.pk %}">
+        {% csrf_token %}
+        <button id="stop-task-button" type="submit" class="btn btn-outline-danger">Stop task</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if task.status == 'error' %}
+    <div class="mt-3">
+      <a href="{% url 'prices:analysis_list' %}" class="btn btn-outline-secondary">Back to analyses</a>
+    </div>
+    {% elif task.status == 'cancelled' %}
+    <div class="mt-3">
+      <a href="{% url 'prices:analysis_list' %}" class="btn btn-outline-secondary">Back to analyses</a>
+    </div>
+    {% elif task.task_type == 'export' and task.status == 'completed' %}
+    <div class="mt-3">
+      <a href="{% url 'prices:download_export' task.pk %}" class="btn btn-primary">Download export</a>
+    </div>
+    {% elif task.status == 'completed' and task.analysis_id %}
+    <div class="mt-3">
+      <a href="{% url 'prices:analysis_detail' task.analysis_id %}" class="btn btn-primary">Open imported analysis</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function() {
+  function formatNumbersInText(text) {
+    if (!text) return text;
+    return text.replace(/\d{4,}/g, function(match) {
+      var value = Number(match);
+      if (!Number.isFinite(value)) return match;
+      return value.toLocaleString('en-US');
+    });
+  }
+
+  function renderBadge(status) {
+    if (status === 'completed') return '<span class="badge bg-success-lt">Completed</span>';
+    if (status === 'running') return '<span class="badge bg-warning-lt">Running…</span>';
+    if (status === 'pending') return '<span class="badge bg-info-lt">Pending</span>';
+    if (status === 'cancelled') return '<span class="badge bg-secondary-lt">Cancelled</span>';
+    if (status === 'error') return '<span class="badge bg-danger-lt">Error</span>';
+    return '<span class="badge bg-secondary-lt">' + status + '</span>';
+  }
+
+  var initialDetailNode = document.getElementById('task-status-detail');
+  if (initialDetailNode) {
+    initialDetailNode.textContent = formatNumbersInText(initialDetailNode.textContent);
+  }
+  var initialLogNode = document.getElementById('task-log');
+  if (initialLogNode) {
+    initialLogNode.textContent = formatNumbersInText(initialLogNode.textContent);
+  }
+
+  var progressTextNode = document.getElementById('task-progress-text');
+  if (progressTextNode) {
+    var taskType = '{{ task.task_type }}';
+    var label = taskType === 'export' ? 'export' : 'import';
+    progressTextNode.textContent = 'The ' + label + ' is running in the background. Progress updates automatically.';
+  }
+
+  var interval = setInterval(function() {
+    fetch("{% url 'prices:transfer_task_status_api' task.pk %}")
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var statusNode = document.getElementById('task-status');
+        var detailNode = document.getElementById('task-status-detail');
+        var progressNode = document.getElementById('task-progress');
+        var logNode = document.getElementById('task-log');
+        var errorNode = document.getElementById('task-error');
+        var errorLabelNode = document.getElementById('task-error-label');
+        var stopButton = document.getElementById('stop-task-button');
+
+        if (statusNode) statusNode.innerHTML = renderBadge(data.status);
+        if (detailNode) {
+          detailNode.textContent = formatNumbersInText(data.status_detail || 'Waiting to start');
+        }
+        if (progressNode) {
+          var pct = data.progress_percent || 0;
+          progressNode.style.width = pct + '%';
+          progressNode.setAttribute('aria-valuenow', pct);
+          progressNode.textContent = pct + '%';
+        }
+        if (logNode) {
+          logNode.textContent = formatNumbersInText(data.activity_log || 'No log entries yet.');
+          logNode.scrollTop = logNode.scrollHeight;
+        }
+        if (errorNode && errorLabelNode) {
+          if (data.status === 'error' && data.error_message) {
+            errorNode.textContent = data.error_message;
+            errorNode.classList.remove('d-none');
+            errorLabelNode.classList.remove('d-none');
+          } else {
+            errorNode.classList.add('d-none');
+            errorLabelNode.classList.add('d-none');
+          }
+        }
+
+        if (stopButton) {
+          if (data.cancel_requested) {
+            stopButton.disabled = true;
+            stopButton.textContent = 'Stopping...';
+          }
+          if (data.status !== 'pending' && data.status !== 'running') {
+            stopButton.disabled = true;
+            stopButton.textContent = 'Stopped';
+          }
+        }
+
+        if (data.status === 'completed' || data.status === 'error' || data.status === 'cancelled') {
+          clearInterval(interval);
+          setTimeout(function() {
+            window.location.reload();
+          }, 1200);
+        }
+      });
+  }, 2000);
+})();
+</script>
+{% endblock %}

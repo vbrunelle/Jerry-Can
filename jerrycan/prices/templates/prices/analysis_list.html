@@ -1,4 +1,5 @@
 {% extends "prices/base.html" %}
+{% load static %}
 {% block title %}Analyses{% endblock %}
 {% block nav_analysis %}active{% endblock %}
 {% block page_title %}Analyses{% endblock %}
@@ -9,6 +10,21 @@
     <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
     New analysis
   </a>
+</div>
+<div class="col-auto">
+  <div id="import-form-container" class="d-flex align-items-center gap-2">
+    <input type="file" id="import-file" name="file" accept=".json.gz,.gz" class="form-control form-control-sm" style="max-width:220px;">
+    <button type="button" id="import-btn" class="btn btn-outline-info btn-sm">
+      <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-sm me-1" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/><path d="M12 11v6"/><path d="M9.5 13.5l2.5 -2.5l2.5 2.5"/></svg>
+      Import
+    </button>
+  </div>
+  <div id="upload-progress" style="display:none;" class="d-flex align-items-center gap-2">
+    <div class="progress" style="width: 220px;">
+      <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+    </div>
+    <small id="progress-text">0%</small>
+  </div>
 </div>
 {% endblock %}
 
@@ -60,4 +76,91 @@
     </table>
   </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'prices/chunked-upload.js' %}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const fileInput = document.getElementById('import-file');
+    const importBtn = document.getElementById('import-btn');
+    const progressContainer = document.getElementById('upload-progress');
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const formContainer = document.getElementById('import-form-container');
+    const defaultBtnHtml = importBtn.innerHTML;
+    let importInFlight = false;
+
+    function setImportButtonLoading(loading, label) {
+      if (loading) {
+        importBtn.disabled = true;
+        importBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${label}`;
+        return;
+      }
+      importBtn.disabled = false;
+      importBtn.innerHTML = defaultBtnHtml;
+    }
+
+    const uploader = new ChunkedUploadManager({
+      chunkSize: 5 * 1024 * 1024, // 5MB chunks
+      onStart: () => {
+        setImportButtonLoading(true, 'Starting import...');
+      },
+        onProgress: (data) => {
+            const percent = Math.round(data.progress);
+        setImportButtonLoading(true, `Uploading ${percent}%`);
+            progressBar.style.width = percent + '%';
+            progressText.textContent = percent + '%';
+        },
+        onComplete: (data) => {
+        importInFlight = false;
+        setImportButtonLoading(false, '');
+            progressContainer.style.display = 'none';
+            formContainer.style.display = 'flex';
+            alert(`Import started! Task ID: ${data.taskId}`);
+            window.location.href = `/analyses/import/${data.taskId}/status/`;
+        },
+        onError: (data) => {
+        importInFlight = false;
+        setImportButtonLoading(false, '');
+            progressContainer.style.display = 'none';
+            formContainer.style.display = 'flex';
+            alert(`Upload failed: ${data.error}`);
+        }
+    });
+
+    importBtn.addEventListener('click', async function() {
+      if (importInFlight) {
+        return;
+      }
+        const file = fileInput.files[0];
+        if (!file) {
+            alert('Please select a file');
+            return;
+        }
+
+      importInFlight = true;
+
+        formContainer.style.display = 'none';
+        progressContainer.style.display = 'flex';
+        progressBar.style.width = '0%';
+        progressText.textContent = '0%';
+
+        try {
+            await uploader.uploadFile(file);
+        } catch (error) {
+            console.error('Upload failed:', error);
+        importInFlight = false;
+        setImportButtonLoading(false, '');
+        }
+    });
+
+    // Allow Enter key to trigger upload
+    fileInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            importBtn.click();
+        }
+    });
+});
+</script>
 {% endblock %}

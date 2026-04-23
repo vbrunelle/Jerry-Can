@@ -4,6 +4,22 @@ from .models import Analysis
 
 
 class AnalysisForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        disable_active = kwargs.pop('disable_active', False)
+        super().__init__(*args, **kwargs)
+
+        if disable_active:
+            self.fields['active'].disabled = True
+            self.fields['active'].help_text = (
+                'This option is temporarily disabled while an import task is running.'
+            )
+
+    def clean_active(self):
+        # Keep current value when field is disabled so it cannot be changed by POST.
+        if self.fields['active'].disabled:
+            return self.instance.active
+        return self.cleaned_data.get('active')
+
     class Meta:
         model = Analysis
         fields = ['data_source_url', 'update_frequency', 'max_snapshots', 'active', 'run_automatically']

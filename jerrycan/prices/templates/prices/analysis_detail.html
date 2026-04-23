@@ -11,6 +11,21 @@
   </a>
 </div>
 <div class="col-auto">
+  <a href="{% url 'prices:analysis_delete' object.pk %}" class="btn btn-outline-danger">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+    Delete
+  </a>
+</div>
+<div class="col-auto">
+  <form method="post" action="{% url 'prices:export_analysis' object.pk %}">
+    {% csrf_token %}
+    <button type="submit" class="btn btn-outline-info">
+      <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/><path d="M12 17v-6"/><path d="M9.5 14.5l2.5 2.5l2.5 -2.5"/></svg>
+      Export
+    </button>
+  </form>
+</div>
+<div class="col-auto">
   <form method="post" action="{% url 'prices:force_snapshot' object.pk %}">
     {% csrf_token %}
     <button type="submit" class="btn btn-primary">
@@ -63,6 +78,43 @@
         {% endif %}
       </div>
     </div>
+
+    {% if transfer_tasks %}
+    <div class="card mt-3">
+      <div class="card-header"><h3 class="card-title">Export / Import Tasks</h3></div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead>
+            <tr><th>Type</th><th>Status</th><th>Created</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for task in transfer_tasks %}
+            <tr id="task-row-{{ task.pk }}">
+              <td>{{ task.get_task_type_display }}</td>
+              <td>
+                {% if task.status == 'completed' %}<span class="badge bg-success-lt">Completed</span>
+                {% elif task.status == 'running' %}<span class="badge bg-warning-lt">Running</span>
+                {% elif task.status == 'pending' %}<span class="badge bg-info-lt">Pending</span>
+                {% elif task.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
+                {% endif %}
+              </td>
+              <td>{{ task.created_at|date:"Y-m-d H:i" }}</td>
+              <td>
+                <a href="{% url 'prices:transfer_task_status' task.pk %}" class="btn btn-sm btn-outline-secondary">Task page</a>
+                {% if task.task_type == 'export' and task.status == 'completed' %}
+                <a href="{% url 'prices:download_export' task.pk %}" class="btn btn-sm btn-outline-primary">Download</a>
+                {% endif %}
+                {% if task.status == 'error' and task.error_message %}
+                <span class="text-danger small" title="{{ task.error_message }}">{{ task.error_message|truncatechars:60 }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
   </div>
   <div class="col-md-8">
     <div class="card">
@@ -73,7 +125,7 @@
             <tr><th>#</th><th>Timestamp</th><th>Status</th><th>Prices</th><th></th></tr>
           </thead>
           <tbody>
-            {% for snapshot in object.snapshots.all %}
+            {% for snapshot in snapshots_page_obj %}
             <tr>
               <td>{{ snapshot.pk }}</td>
               <td>{{ snapshot.timestamp|date:"Y-m-d H:i:s" }}</td>
@@ -84,7 +136,7 @@
                 {% elif snapshot.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
                 {% else %}<span class="badge bg-secondary-lt">{{ snapshot.status }}</span>{% endif %}
               </td>
-              <td>{{ snapshot.prices.count }}</td>
+              <td>{{ snapshot.price_count }}</td>
               <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
             </tr>
             {% empty %}
@@ -93,7 +145,41 @@
           </tbody>
         </table>
       </div>
+      {% if snapshots_page_obj.paginator.num_pages > 1 %}
+      <div class="card-footer d-flex justify-content-between align-items-center">
+        <div class="text-muted small">
+          Page {{ snapshots_page_obj.number }} of {{ snapshots_page_obj.paginator.num_pages }}
+        </div>
+        <div class="btn-group" role="group" aria-label="Analysis snapshot pagination">
+          {% if snapshots_page_obj.has_previous %}
+          <a href="?snapshot_page={{ snapshots_page_obj.previous_page_number }}" class="btn btn-outline-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% if snapshots_page_obj.has_next %}
+          <a href="?snapshot_page={{ snapshots_page_obj.next_page_number }}" class="btn btn-outline-secondary btn-sm">Next</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
+
+{% for task in transfer_tasks %}
+{% if task.status == 'pending' or task.status == 'running' %}
+<script>
+(function(taskId) {
+  var interval = setInterval(function() {
+    fetch("{% url 'prices:transfer_task_status_api' task.pk %}")
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'completed' || data.status === 'error') {
+          clearInterval(interval);
+          location.reload();
+        }
+      });
+  }, 2000);
+})({{ task.pk }});
+</script>
+{% endif %}
+{% endfor %}
 {% endblock %}

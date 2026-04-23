@@ -1,14 +1,18 @@
 import gzip
 import json
+import os
 import threading
 import time
+from datetime import datetime
 
 import pandas as pd
 import requests
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import models, transaction
+from django.db import connection, models, transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 
 class UserProfile(models.Model):
@@ -31,16 +35,18 @@ class Snapshot(models.Model):
         PROCESSED   = 'processed',   'Processed'
         ERROR       = 'error',       'Error'
 
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(default=timezone.now)
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
         default=Status.DOWNLOADING,
     )
+    price_count = models.PositiveIntegerField(default=0)
     analysis = models.ForeignKey('Analysis', on_delete=models.CASCADE, related_name='snapshots')
 
     def populate(self, data: pd.DataFrame) -> None:
         """Parses a DataFrame of station data and creates Station, Fuel and Price objects."""
+        count = 0
         with transaction.atomic():
             for _, row in data.iterrows():
                 raw_address = row.get('Address', '')
@@ -77,6 +83,9 @@ class Snapshot(models.Model):
                         snapshot=self,
                         price=value,
                     )
+                    count += 1
+            self.price_count = count
+            self.save(update_fields=['price_count'])
 
 class Station(models.Model):
     name = models.CharField(max_length=255)
@@ -117,10 +126,27 @@ class Analysis(models.Model):
         """Returns the single active analysis, or None."""
         return cls.objects.filter(active=True).first()
 
+    @staticmethod
+    def _has_running_import_task():
+        transfer_task_model = globals().get('AnalysisTransferTask')
+        if transfer_task_model is None:
+            return False
+        return transfer_task_model.objects.filter(
+            task_type=transfer_task_model.TaskType.IMPORT,
+            status__in=[
+                transfer_task_model.Status.PENDING,
+                transfer_task_model.Status.RUNNING,
+            ],
+        ).exists()
+
     def save(self, *args, **kwargs):
         """Ensure only one analysis is active at a time.
         Start the background thread when run_automatically is turned on.
         """
+        # Do not switch current analysis while an import is still running.
+        if self.active and self._has_running_import_task():
+            self.active = False
+
         if self.active:
             Analysis.objects.exclude(pk=self.pk).filter(active=True).update(active=False)
 
@@ -185,7 +211,8 @@ class Analysis(models.Model):
                 continue
 
             snapshot.status = Snapshot.Status.PROCESSED
-            snapshot.save(update_fields=['status'])
+            snapshot.price_count = Price.objects.filter(snapshot=snapshot).count()
+            snapshot.save(update_fields=['status', 'price_count'])
             time.sleep(analysis.update_frequency * 60)
 
     def _fetch_data(self):
@@ -211,3 +238,488 @@ class Analysis(models.Model):
             records.append(record)
 
         return pd.DataFrame(records)
+
+
+def _get_export_dir():
+    """Return the directory for storing export/import files, creating it if needed."""
+    export_dir = getattr(settings, 'ANALYSIS_EXPORT_DIR', None)
+    if not export_dir:
+        export_dir = os.path.join(settings.BASE_DIR, 'exports')
+    os.makedirs(export_dir, exist_ok=True)
+    return export_dir
+
+
+class TaskCancelledError(Exception):
+    """Raised when a transfer task has been asked to stop."""
+
+
+class AnalysisTransferTask(models.Model):
+    class TaskType(models.TextChoices):
+        EXPORT = 'export', 'Export'
+        IMPORT = 'import', 'Import'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        RUNNING = 'running', 'Running'
+        COMPLETED = 'completed', 'Completed'
+        CANCELLED = 'cancelled', 'Cancelled'
+        ERROR = 'error', 'Error'
+
+    task_type = models.CharField(max_length=6, choices=TaskType.choices)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    analysis = models.ForeignKey(
+        Analysis, on_delete=models.CASCADE, related_name='transfer_tasks',
+        null=True, blank=True,
+    )
+    file_path = models.CharField(max_length=512, blank=True, default='')
+    cancel_requested = models.BooleanField(default=False)
+    status_detail = models.CharField(max_length=255, blank=True, default='')
+    progress_percent = models.PositiveSmallIntegerField(default=0)
+    activity_log = models.TextField(blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def _log(self, message, *, detail=None, progress=None, save=True):
+        timestamp = timezone.localtime().strftime('%Y-%m-%d %H:%M:%S')
+        line = f"[{timestamp}] {message}"
+        if self.activity_log:
+            self.activity_log = f"{self.activity_log}\n{line}"
+        else:
+            self.activity_log = line
+
+        update_fields = ['activity_log']
+        if detail is not None:
+            self.status_detail = detail
+            update_fields.append('status_detail')
+        if progress is not None:
+            self.progress_percent = max(0, min(100, int(progress)))
+            update_fields.append('progress_percent')
+        if save:
+            self.save(update_fields=update_fields)
+
+    def request_cancel(self):
+        self.cancel_requested = True
+        self.save(update_fields=['cancel_requested'])
+        self._log('Stop requested by user', detail='Stopping task')
+
+    def _check_cancel_requested(self):
+        self.refresh_from_db(fields=['cancel_requested'])
+        if self.cancel_requested:
+            raise TaskCancelledError('Task cancelled by user')
+
+    # --- Export ---------------------------------------------------------------
+
+    def start_export(self):
+        """Launch export in a background thread."""
+        thread = threading.Thread(target=self._run_export, daemon=True,
+                                  name=f"export-{self.pk}")
+        thread.start()
+        return thread
+
+    def _run_export(self):
+        try:
+            self.status = self.Status.RUNNING
+            self.status_detail = 'Preparing export'
+            self.progress_percent = 0
+            self.save(update_fields=['status', 'status_detail', 'progress_percent'])
+            self._log('Export started', detail='Preparing export', progress=0)
+            self._do_export()
+            self.status = self.Status.COMPLETED
+            self.status_detail = 'Export completed'
+            self.progress_percent = 100
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'progress_percent', 'completed_at'])
+            self._log('Export completed', detail='Export completed', progress=100)
+        except TaskCancelledError:
+            self.status = self.Status.CANCELLED
+            self.status_detail = 'Export cancelled'
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'completed_at'])
+            self._log('Export cancelled by user', detail='Export cancelled')
+        except Exception as exc:
+            self.status = self.Status.ERROR
+            self.error_message = str(exc)[:2000]
+            self.status_detail = 'Export failed'
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'error_message', 'completed_at'])
+            self._log(f"Export failed: {self.error_message}", detail='Export failed')
+
+    def _do_export(self):
+        self._check_cancel_requested()
+        analysis = self.analysis
+        if analysis is None:
+            raise ValueError("No analysis associated with this export task")
+        self._log('Collecting data for export', detail='Collecting data', progress=15)
+        export_dir = _get_export_dir()
+        filepath = os.path.join(export_dir, f'analysis_{analysis.pk}_{self.pk}.json.gz')
+
+        with gzip.open(filepath, 'wt', encoding='utf-8') as f:
+            f.write('{"version":1,')
+
+            # Analysis metadata
+            f.write('"analysis":')
+            json.dump({
+                'update_frequency': analysis.update_frequency,
+                'data_source_url': analysis.data_source_url,
+                'active': analysis.active,
+                'run_automatically': analysis.run_automatically,
+                'max_snapshots': analysis.max_snapshots,
+            }, f)
+
+            # Fuels used by this analysis
+            fuel_ids = (Price.objects
+                        .filter(snapshot__analysis=analysis)
+                        .values_list('fuel_id', flat=True)
+                        .distinct())
+            fuels = list(Fuel.objects.filter(pk__in=fuel_ids).values('id', 'name'))
+            f.write(',"fuels":')
+            json.dump(fuels, f)
+
+            # Stations
+            f.write(',"stations":[')
+            first = True
+            for st in (Station.objects.filter(analysis=analysis)
+                       .values('id', 'name', 'city', 'region', 'adress',
+                               'longitude', 'latitude')
+                       .iterator(chunk_size=2000)):
+                self._check_cancel_requested()
+                if not first:
+                    f.write(',')
+                json.dump(st, f)
+                first = False
+            f.write(']')
+
+            # Snapshots
+            f.write(',"snapshots":[')
+            first = True
+            for snap in (Snapshot.objects.filter(analysis=analysis)
+                         .values('id', 'timestamp', 'status')
+                         .iterator(chunk_size=2000)):
+                self._check_cancel_requested()
+                if not first:
+                    f.write(',')
+                snap['timestamp'] = snap['timestamp'].isoformat()
+                json.dump(snap, f)
+                first = False
+            f.write(']')
+
+            # Prices – streamed in chunks
+            f.write(',"prices":[')
+            first = True
+            for pr in (Price.objects.filter(snapshot__analysis=analysis)
+                       .values('station_id', 'fuel_id', 'price', 'snapshot_id')
+                       .iterator(chunk_size=5000)):
+                self._check_cancel_requested()
+                if not first:
+                    f.write(',')
+                pr['price'] = float(pr['price'])
+                json.dump(pr, f)
+                first = False
+            f.write(']')
+
+            f.write('}')
+
+        self.file_path = filepath
+        self.status_detail = 'Writing export file complete'
+        self.progress_percent = 95
+        self.save(update_fields=['file_path', 'status_detail', 'progress_percent'])
+        self._log('Export file generated', detail='Finalizing export', progress=95)
+
+    # --- Import ---------------------------------------------------------------
+
+    def start_import(self):
+        """Launch import in a background thread."""
+        thread = threading.Thread(target=self._run_import, daemon=True,
+                                  name=f"import-{self.pk}")
+        thread.start()
+        return thread
+
+    def _run_import(self):
+        try:
+            self.status = self.Status.RUNNING
+            self.status_detail = 'Preparing import'
+            self.progress_percent = 0
+            self.save(update_fields=['status', 'status_detail', 'progress_percent'])
+            self._log('Import started', detail='Preparing import', progress=0)
+            should_activate = self._do_import()
+            self.status = self.Status.COMPLETED
+            self.status_detail = 'Import completed'
+            self.progress_percent = 100
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'progress_percent', 'completed_at'])
+
+            # Activate imported analysis only after import task is completed.
+            if should_activate and self.analysis_id:
+                analysis = self.analysis
+                analysis.active = True
+                analysis.save(update_fields=['active'])
+
+            self._log('Import completed', detail='Import completed', progress=100)
+        except TaskCancelledError:
+            self.status = self.Status.CANCELLED
+            self.status_detail = 'Import cancelled'
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'completed_at'])
+            self._log('Import cancelled by user', detail='Import cancelled')
+        except Exception as exc:
+            self.status = self.Status.ERROR
+            self.error_message = str(exc)[:2000]
+            self.status_detail = 'Import failed'
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'status_detail', 'error_message', 'completed_at'])
+            self._log(f"Import failed: {self.error_message}", detail='Import failed')
+
+    def _do_import(self):
+        self._check_cancel_requested()
+        filepath = self.file_path
+        self._log('Reading archive', detail='Reading archive', progress=5)
+        with gzip.open(filepath, 'rt', encoding='utf-8') as f:
+            data = json.load(f)
+        self._check_cancel_requested()
+        self._log('Archive loaded', detail='Validating archive', progress=8)
+
+        version = data.get('version', 1)
+        if version != 1:
+            raise ValueError(f"Unsupported export version: {version}")
+
+        analysis_data = data['analysis']
+        should_activate = bool(analysis_data.get('active', False))
+        # Don't auto-run on import
+        analysis_data['run_automatically'] = False
+        self._log('Creating analysis record', detail='Creating analysis', progress=10)
+
+        with transaction.atomic():
+            analysis = Analysis(
+                update_frequency=analysis_data.get('update_frequency', 5),
+                data_source_url=analysis_data.get('data_source_url', ''),
+                active=False,
+                run_automatically=False,
+                max_snapshots=analysis_data.get('max_snapshots', 100),
+            )
+            # Use super().save() to avoid the custom save logic
+            models.Model.save(analysis)
+
+        self.analysis = analysis
+        self.save(update_fields=['analysis'])
+        self._log(f'Analysis #{analysis.pk} created', detail='Importing fuels', progress=20)
+        self._check_cancel_requested()
+
+        # Fuels: get_or_create by name, build ID mapping (fast, only a handful of fuels)
+        fuel_id_map = {}
+        for fuel_data in data.get('fuels', []):
+            self._check_cancel_requested()
+            fuel, _ = Fuel.objects.get_or_create(name=fuel_data['name'])
+            fuel_id_map[fuel_data['id']] = fuel.pk
+        self._log(f'Imported {len(fuel_id_map)} fuel types', detail='Importing stations', progress=30)
+
+        # Keep mapping inserts atomic, then insert prices in short batches to reduce
+        # lock duration for concurrent read requests (e.g. polling task status).
+        with transaction.atomic():
+            # Stations: bulk_create with large batches
+            station_id_map = {}
+            station_data_list = data.get('stations', [])
+            station_objs = [
+                Station(
+                    name=s['name'], city=s['city'], region=s['region'],
+                    adress=s['adress'], longitude=s['longitude'],
+                    latitude=s['latitude'], analysis=analysis,
+                )
+                for s in station_data_list
+            ]
+            idx = 0
+            for i in range(0, len(station_objs), 10000):
+                self._check_cancel_requested()
+                created = Station.objects.bulk_create(station_objs[i:i + 10000])
+                for obj in created:
+                    station_id_map[station_data_list[idx]['id']] = obj.pk
+                    idx += 1
+                if station_data_list:
+                    self._log(
+                        f'Stations imported: {idx}/{len(station_data_list)}',
+                        detail=f'Importing stations ({idx}/{len(station_data_list)})',
+                        progress=30 + int((idx / len(station_data_list)) * 15),
+                    )
+            self._log(
+                f'Imported {len(station_id_map)} stations',
+                detail='Importing snapshots',
+                progress=45,
+            )
+
+            # Snapshots: bulk_create with large batches
+            snapshot_id_map = {}
+            snapshot_data_list = data.get('snapshots', [])
+            snapshot_objs = [
+                Snapshot(
+                    analysis=analysis,
+                    status=snap.get('status', Snapshot.Status.PROCESSED),
+                    timestamp=datetime.fromisoformat(snap['timestamp']) if isinstance(snap.get('timestamp'), str) else snap.get('timestamp'),
+                )
+                for snap in snapshot_data_list
+            ]
+            idx = 0
+            for i in range(0, len(snapshot_objs), 10000):
+                self._check_cancel_requested()
+                created = Snapshot.objects.bulk_create(snapshot_objs[i:i + 10000])
+                for obj in created:
+                    snapshot_id_map[snapshot_data_list[idx]['id']] = obj.pk
+                    idx += 1
+                if snapshot_data_list:
+                    self._log(
+                        f'Snapshots imported: {idx}/{len(snapshot_data_list)}',
+                        detail=f'Importing snapshots ({idx}/{len(snapshot_data_list)})',
+                        progress=45 + int((idx / len(snapshot_data_list)) * 15),
+                    )
+            self._log(
+                f'Imported {len(snapshot_id_map)} snapshots',
+                detail='Importing prices',
+                progress=60,
+            )
+
+        # Prices: raw SQL executemany in batches to avoid one long DB write lock.
+        price_table = Price._meta.db_table
+        price_sql = (
+            f"INSERT INTO {price_table} (station_id, fuel_id, snapshot_id, price) "
+            f"VALUES (%s, %s, %s, %s)"
+        )
+
+        batch = []
+        batch_size = 5000
+        inserted_prices = 0
+        total_prices = len(data.get('prices', []))
+        next_progress_milestone = 5
+        if total_prices:
+            self._log(f'Importing {total_prices:,} prices', detail='Importing prices', progress=60)
+        with connection.cursor() as cursor:
+            for pr in data.get('prices', []):
+                ms = station_id_map.get(pr['station_id'])
+                mf = fuel_id_map.get(pr['fuel_id'])
+                mn = snapshot_id_map.get(pr['snapshot_id'])
+                if ms is None or mf is None or mn is None:
+                    continue
+                batch.append((ms, mf, mn, pr['price']))
+                if len(batch) >= batch_size:
+                    self._check_cancel_requested()
+                    with transaction.atomic():
+                        cursor.executemany(price_sql, batch)
+                    inserted_prices += len(batch)
+                    if total_prices:
+                        ratio = inserted_prices / total_prices
+                        progress = 60 + int(ratio * 35)
+                        self.status_detail = f'Importing prices ({inserted_prices:,}/{total_prices:,})'
+                        self.progress_percent = max(60, min(95, progress))
+                        self.save(update_fields=['status_detail', 'progress_percent'])
+
+                        current_pct = int(ratio * 100)
+                        while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
+                            msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
+                            self._log(
+                                msg,
+                                detail=self.status_detail,
+                                progress=self.progress_percent,
+                            )
+                            print(f'[AnalysisTransferTask #{self.pk}] {msg}')
+                            next_progress_milestone += 5
+                    batch.clear()
+            if batch:
+                self._check_cancel_requested()
+                with transaction.atomic():
+                    cursor.executemany(price_sql, batch)
+                inserted_prices += len(batch)
+                if total_prices:
+                    ratio = inserted_prices / total_prices
+                    progress = 60 + int(ratio * 35)
+                    detail = f'Importing prices ({inserted_prices:,}/{total_prices:,})'
+                    bounded_progress = max(60, min(95, progress))
+                    current_pct = int(ratio * 100)
+                    while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
+                        msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
+                        self._log(msg, detail=detail, progress=bounded_progress)
+                        print(f'[AnalysisTransferTask #{self.pk}] {msg}')
+                        next_progress_milestone += 5
+                    self._log(
+                        f'Prices imported: {inserted_prices:,}/{total_prices:,}',
+                        detail=detail,
+                        progress=bounded_progress,
+                    )
+
+        self._log(
+            f'Imported {inserted_prices:,} prices',
+            detail='Finalizing import',
+            progress=95,
+        )
+
+        # Update cached price counts on all snapshots for this analysis.
+        self._log('Updating snapshot price counts', detail='Finalizing import', progress=96)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {Snapshot._meta.db_table} SET price_count = ("
+                f"  SELECT COUNT(*) FROM {Price._meta.db_table}"
+                f"  WHERE {Price._meta.db_table}.snapshot_id = {Snapshot._meta.db_table}.id"
+                f") WHERE analysis_id = %s",
+                [analysis.pk],
+            )
+
+        return should_activate
+
+
+class ChunkedUpload(models.Model):
+    """Track chunked file uploads in progress."""
+    class Status(models.TextChoices):
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        ERROR = 'error', 'Error'
+
+    upload_id = models.CharField(max_length=64, unique=True, db_index=True)
+    filename = models.CharField(max_length=256)
+    total_chunks = models.PositiveIntegerField()
+    received_chunks = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.IN_PROGRESS)
+    temp_dir = models.CharField(max_length=512)
+    final_path = models.CharField(max_length=512, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def get_chunk_path(self, chunk_number):
+        """Return the path for a specific chunk file."""
+        return os.path.join(self.temp_dir, f'chunk_{chunk_number}')
+
+    def all_chunks_received(self):
+        """Check if all chunks have been received."""
+        return self.received_chunks >= self.total_chunks
+
+    def assemble_file(self):
+        """Assemble all chunks into the final file."""
+        export_dir = _get_export_dir()
+        final_path = os.path.join(export_dir, f'import_{self.upload_id}.json.gz')
+
+        with open(final_path, 'wb') as out_file:
+            for i in range(self.total_chunks):
+                chunk_path = self.get_chunk_path(i)
+                if not os.path.exists(chunk_path):
+                    raise FileNotFoundError(f"Chunk {i} missing at {chunk_path}")
+                with open(chunk_path, 'rb') as chunk_file:
+                    out_file.write(chunk_file.read())
+
+        self.final_path = final_path
+        self.status = self.Status.COMPLETED
+        self.completed_at = timezone.now()
+        self.save(update_fields=['final_path', 'status', 'completed_at'])
+
+        # Clean up temp directory
+        try:
+            import shutil
+            shutil.rmtree(self.temp_dir)
+        except Exception:
+            pass
+
+        return final_path
+
+    def cleanup(self):
+        """Remove temporary files."""
+        try:
+            import shutil
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+        except Exception:
+            pass

@@ -1,20 +1,27 @@
 import math
+import os
+import uuid
 from datetime import datetime
+import json
+import tempfile
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
+from django.core.paginator import Paginator
 from django.db import connection
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Sum
 from django.db.models.functions import TruncMinute, TruncHour, TruncDay, TruncWeek, TruncMonth, TruncYear
-from django.http import JsonResponse
+from django.http import FileResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.utils.decorators import method_decorator
-from django.views.generic import CreateView, DetailView, ListView, TemplateView, UpdateView
+from django.views.decorators.csrf import csrf_exempt
+from django.views.generic import CreateView, DeleteView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import AnalysisForm
-from .models import Analysis, Price, Snapshot, Station
+from .models import (Analysis, AnalysisTransferTask, ChunkedUpload, Price, Snapshot, Station,
+                     _get_export_dir)
 
 TRUNC_MAP = {
     'minute': TruncMinute,
@@ -24,6 +31,8 @@ TRUNC_MAP = {
     'month': TruncMonth,
     'year': TruncYear,
 }
+
+SNAPSHOTS_PER_PAGE = 50
 
 
 def _resolve_snapshots(analysis, mode='latest', page=1, until_dt=None, start_dt=None, end_dt=None):
@@ -196,16 +205,17 @@ def _analysis_storage_estimate(analysis):
         }
 
     # Use only analysis-owned tables. Fuel is shared globally across analyses.
+    # price_count is cached on Snapshot, so summing it is O(snapshots) not O(prices).
+    own_snapshots = analysis.snapshots.count()
+    total_snapshots = Snapshot.objects.count()
+    own_prices = analysis.snapshots.aggregate(total=Sum('price_count'))['total'] or 0
+    total_prices = Price.objects.count()
+
     table_stats = [
         ('Analysis', 'prices_analysis', 1, Analysis.objects.count()),
-        ('Snapshots', 'prices_snapshot', analysis.snapshots.count(), Snapshot.objects.count()),
+        ('Snapshots', 'prices_snapshot', own_snapshots, total_snapshots),
         ('Stations', 'prices_station', analysis.stations.count(), Station.objects.count()),
-        (
-            'Prices',
-            'prices_price',
-            Price.objects.filter(snapshot__analysis=analysis).count(),
-            Price.objects.count(),
-        ),
+        ('Prices', 'prices_price', own_prices, total_prices),
     ]
 
     breakdown = []
@@ -241,7 +251,7 @@ class HomeView(TemplateView):
         if analysis:
             ctx["station_count"] = Station.objects.filter(analysis=analysis).count()
             ctx["snapshot_count"] = Snapshot.objects.filter(analysis=analysis).count()
-            ctx["price_count"] = Price.objects.filter(snapshot__analysis=analysis).count()
+            ctx["price_count"] = analysis.snapshots.aggregate(total=Sum('price_count'))['total'] or 0
             ctx["latest_snapshots"] = Snapshot.objects.filter(analysis=analysis).order_by("-timestamp")[:5]
         else:
             ctx["station_count"] = ctx["snapshot_count"] = ctx["price_count"] = 0
@@ -263,7 +273,20 @@ class AnalysisDetailView(DetailView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
+        snapshots_qs = (
+            self.object.snapshots
+            .order_by('-timestamp', '-pk')
+        )
+        paginator = Paginator(snapshots_qs, SNAPSHOTS_PER_PAGE)
+        snapshots_page_obj = paginator.get_page(self.request.GET.get('snapshot_page', 1))
+
         ctx['storage_estimate'] = _analysis_storage_estimate(self.object)
+        ctx['transfer_tasks'] = (
+            AnalysisTransferTask.objects
+            .filter(analysis=self.object)
+            .order_by('-created_at')[:10]
+        )
+        ctx['snapshots_page_obj'] = snapshots_page_obj
         return ctx
 
 
@@ -281,8 +304,40 @@ class AnalysisUpdateView(UpdateView):
     form_class = AnalysisForm
     template_name = "prices/analysis_form.html"
 
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['disable_active'] = AnalysisTransferTask.objects.filter(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            status__in=[
+                AnalysisTransferTask.Status.PENDING,
+                AnalysisTransferTask.Status.RUNNING,
+            ],
+        ).exists()
+        return kwargs
+
     def get_success_url(self):
         return reverse_lazy("prices:analysis_detail", kwargs={"pk": self.object.pk})
+
+
+@method_decorator(staff_member_required, name="dispatch")
+class AnalysisDeleteView(DeleteView):
+    model = Analysis
+    template_name = "prices/analysis_confirm_delete.html"
+    success_url = reverse_lazy("prices:analysis_list")
+
+    def delete(self, request, *args, **kwargs):
+        analysis = self.get_object()
+        # Cancel all pending/running tasks so background threads exit gracefully.
+        running_tasks = AnalysisTransferTask.objects.filter(
+            analysis=analysis,
+            status__in=[
+                AnalysisTransferTask.Status.PENDING,
+                AnalysisTransferTask.Status.RUNNING,
+            ],
+        )
+        for task in running_tasks:
+            task.request_cancel()
+        return super().delete(request, *args, **kwargs)
 
 
 class JerryCanPasswordChangeView(PasswordChangeView):
@@ -357,10 +412,11 @@ class StationDetailView(DetailView):
 class SnapshotListView(ActiveAnalysisMixin, ListView):
     model = Snapshot
     template_name = "prices/snapshot_list.html"
-    ordering = ["-timestamp"]
+    ordering = ["-timestamp", "-pk"]
+    paginate_by = SNAPSHOTS_PER_PAGE
 
     def _filter_by_analysis(self, qs, analysis):
-        return qs.filter(analysis=analysis).annotate(price_count=Count('prices'))
+        return qs.filter(analysis=analysis)
 
 
 class SnapshotDetailView(DetailView):
@@ -417,3 +473,200 @@ def station_prices_api(request, pk):
     )
     return JsonResponse({'data': _prices_to_list(prices_qs)})
 
+
+# ---------------------------------------------------------------------------
+# Chunked Upload API
+# ---------------------------------------------------------------------------
+
+@staff_member_required
+def upload_chunk(request):
+    """Accept a chunk of a file upload."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    try:
+        upload_id = request.POST.get('uploadId', '')
+        chunk_number = int(request.POST.get('chunkNumber', -1))
+        total_chunks = int(request.POST.get('totalChunks', -1))
+        chunk_file = request.FILES.get('chunk')
+
+        if not all([upload_id, chunk_number >= 0, total_chunks > 0, chunk_file]):
+            return JsonResponse({'error': 'Missing required fields'}, status=400)
+
+        # Get or create chunked upload tracker
+        chunked_upload, created = ChunkedUpload.objects.get_or_create(
+            upload_id=upload_id,
+            defaults={
+                'filename': chunk_file.name,
+                'total_chunks': total_chunks,
+                'temp_dir': os.path.join(tempfile.gettempdir(), f'upload_{upload_id}'),
+            }
+        )
+
+        # Validate total_chunks consistency
+        if chunked_upload.total_chunks != total_chunks:
+            return JsonResponse({'error': 'Chunk count mismatch'}, status=400)
+
+        # Save chunk
+        os.makedirs(chunked_upload.temp_dir, exist_ok=True)
+        chunk_path = chunked_upload.get_chunk_path(chunk_number)
+        with open(chunk_path, 'wb') as f:
+            for block in chunk_file.chunks():
+                f.write(block)
+
+        # Update received count
+        chunked_upload.received_chunks = chunk_number + 1
+        chunked_upload.save(update_fields=['received_chunks'])
+
+        return JsonResponse({
+            'status': 'ok',
+            'uploadId': upload_id,
+            'chunk': chunk_number,
+            'progress': chunked_upload.received_chunks / chunked_upload.total_chunks * 100,
+        })
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@staff_member_required
+def upload_complete(request):
+    """Finalize the upload and start the import."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        upload_id = data.get('uploadId', '')
+
+        if not upload_id:
+            return JsonResponse({'error': 'Missing uploadId'}, status=400)
+
+        # Get the chunked upload
+        chunked_upload = get_object_or_404(ChunkedUpload, upload_id=upload_id)
+
+        if not chunked_upload.all_chunks_received():
+            return JsonResponse({
+                'error': f'Not all chunks received ({chunked_upload.received_chunks}/{chunked_upload.total_chunks})'
+            }, status=400)
+
+        # Assemble the file
+        final_path = chunked_upload.assemble_file()
+
+        # Create import task
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            file_path=final_path,
+        )
+        task.start_import()
+
+        return JsonResponse({
+            'status': 'import_started',
+            'taskId': task.pk,
+            'filePath': final_path,
+        })
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+# ---------------------------------------------------------------------------
+# Export / Import views
+# ---------------------------------------------------------------------------
+
+@staff_member_required
+def export_analysis(request, pk):
+    """Start a background export of an analysis."""
+    analysis = get_object_or_404(Analysis, pk=pk)
+    if request.method == 'POST':
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.EXPORT,
+            analysis=analysis,
+        )
+        task.start_export()
+    return redirect('prices:analysis_detail', pk=pk)
+
+
+@staff_member_required
+def import_analysis(request):
+    """Accept an uploaded export file and start a background import."""
+    if request.method == 'POST' and request.FILES.get('file'):
+        uploaded = request.FILES['file']
+        export_dir = _get_export_dir()
+        # Use a UUID-based filename to avoid any path injection from user input
+        dest = os.path.join(export_dir, f'import_{uuid.uuid4().hex}.json.gz')
+        with open(dest, 'wb') as f:
+            for chunk in uploaded.chunks():
+                f.write(chunk)
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            file_path=dest,
+        )
+        task.start_import()
+        return redirect('prices:import_status', task_id=task.pk)
+    return redirect('prices:analysis_list')
+
+
+@staff_member_required
+def import_status(request, task_id):
+    """Backward-compatible import status URL."""
+    return redirect('prices:transfer_task_status', task_id=task_id)
+
+
+@staff_member_required
+def transfer_task_status(request, task_id):
+    """Page showing transfer task status and activity log."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id)
+    from django.shortcuts import render
+    return render(request, 'prices/import_status.html', {'task': task})
+
+
+@staff_member_required
+def cancel_transfer_task(request, task_id):
+    """Request cancellation for a running/pending transfer task."""
+    if request.method != 'POST':
+        return redirect('prices:transfer_task_status', task_id=task_id)
+
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id)
+    if task.status in (AnalysisTransferTask.Status.PENDING, AnalysisTransferTask.Status.RUNNING):
+        task.request_cancel()
+    return redirect('prices:transfer_task_status', task_id=task_id)
+
+
+@staff_member_required
+def download_export(request, task_id):
+    """Download the exported file."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id,
+                             task_type=AnalysisTransferTask.TaskType.EXPORT,
+                             status=AnalysisTransferTask.Status.COMPLETED)
+    if not task.file_path or not os.path.isfile(task.file_path):
+        return JsonResponse({'error': 'File not found'}, status=404)
+    # Verify the file is within the export directory to prevent path traversal
+    export_dir = os.path.realpath(_get_export_dir())
+    real_path = os.path.realpath(task.file_path)
+    if not real_path.startswith(export_dir + os.sep):
+        return JsonResponse({'error': 'Invalid file path'}, status=400)
+    fh = open(real_path, 'rb')  # noqa: SIM115 — FileResponse closes this
+    return FileResponse(
+        fh,
+        as_attachment=True,
+        filename=os.path.basename(real_path),
+    )
+
+
+@staff_member_required
+def transfer_task_status_api(request, task_id):
+    """JSON endpoint to poll the status of a transfer task."""
+    task = get_object_or_404(AnalysisTransferTask, pk=task_id)
+    data = {
+        'id': task.pk,
+        'task_type': task.task_type,
+        'status': task.status,
+        'status_detail': task.status_detail,
+        'progress_percent': task.progress_percent,
+        'activity_log': task.activity_log,
+        'cancel_requested': task.cancel_requested,
+        'error_message': task.error_message,
+        'analysis_id': task.analysis_id,
+    }
+    return JsonResponse(data)

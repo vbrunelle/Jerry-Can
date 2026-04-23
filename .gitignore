@@ -58,6 +58,7 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+exports/
 
 # Sphinx documentation
 docs/_build/
@@ -107,3 +108,9 @@ cython_debug/
 
 # Docker
 staticfiles/
+
+# Chunked upload temporary files
+uploads/
+tmp/uploads/
+**/chunk_*
+temp_chunk*

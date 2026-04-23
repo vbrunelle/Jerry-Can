@@ -44,11 +44,14 @@
           </div>
 
           <div class="mb-3">
-            <label class="form-check">
+            <label class="form-check {% if form.active.field.disabled %}text-muted{% endif %}">
               {{ form.active }}
               <span class="form-check-label">Set as active analysis</span>
             </label>
             <small class="form-hint d-block">{{ form.active.help_text }}</small>
+            {% if form.active.field.disabled %}
+            <small class="text-muted d-block">You can change this once all import tasks are finished.</small>
+            {% endif %}
           </div>
 
           <div class="mb-3">
