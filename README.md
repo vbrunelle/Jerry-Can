@@ -31,8 +31,6 @@ Jerry-Can/
 │       └── management/
 │           └── commands/
 │               └── create_initial_admin.py  # Création du compte admin initial
-├── nginx/
-│   └── default.conf             # Configuration nginx (reverse proxy)
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -59,6 +57,69 @@ Copiez `.env.example` vers `.env` et ajustez les variables :
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Origines CSRF autorisées (séparées par des virgules)       | `http://localhost:8080` |
 | `DJANGO_DB_DIR`               | Répertoire du fichier SQLite (`db.sqlite3`)                | Répertoire du projet |
 | `NGINX_PORT`                  | Port exposé par nginx sur la machine hôte                  | `8080`               |
+| `NGINX_CONF`                  | Configuration nginx injectée au démarrage du conteneur     | *(voir `.env.example`)*|
+
+### Configuration nginx sans fichiers locaux
+
+La configuration nginx est entièrement définie dans le fichier `.env` via la variable `NGINX_CONF`.
+Au démarrage, le conteneur nginx écrit cette valeur dans `/etc/nginx/conf.d/default.conf` avant de lancer nginx.
+Aucun fichier local n'est monté dans le conteneur.
+
+**Pourquoi cette approche ?**  
+L'ancienne configuration montait `./nginx/default.conf` depuis le système de fichiers hôte
+(`bind-mount`). Si ce fichier n'existait pas ou si Docker créait automatiquement un répertoire à
+sa place (comportement Docker par défaut lorsque le chemin source est absent), nginx échouait avec
+l'erreur :
+
+```
+mount src=…/nginx/default.conf … not a directory: Are you trying to mount a directory onto a
+file (or vice-versa)?
+```
+
+En injectant la configuration via `NGINX_CONF`, cette dépendance aux fichiers locaux est éliminée :
+tout est contenu dans `.env` et `docker-compose.yml`, aucun fichier hôte supplémentaire n'est requis.
+
+**Format de `NGINX_CONF`**  
+La valeur doit tenir sur une seule ligne dans le fichier `.env`.
+Utilisez `\n` pour représenter les sauts de ligne — le conteneur convertit ces séquences en vrais
+retours chariot via `printf "%b"`.
+
+Les variables nginx (`$host`, `$remote_addr`, etc.) sont des variables **nginx**, pas des variables
+shell. Elles **n'ont pas besoin d'être échappées** dans le fichier `.env` car Docker Compose ne
+substitue pas les variables dans les valeurs du fichier `.env`.
+En revanche, si vous deviez écrire `$host` directement dans `docker-compose.yml` (pas dans `.env`),
+il faudrait écrire `$$host`.
+
+**Changer le port d'écoute**  
+Modifiez `NGINX_PORT` dans `.env` :
+
+```dotenv
+NGINX_PORT=9090
+```
+
+**Vérification après démarrage**
+
+```bash
+# Démarrer uniquement nginx (et ses dépendances)
+docker compose up -d nginx
+
+# Vérifier les logs nginx
+docker compose logs -f nginx
+
+# Vérifier que la config a bien été écrite dans le conteneur
+docker compose exec nginx cat /etc/nginx/conf.d/default.conf
+```
+
+**Limites de l'approche par variable d'environnement**
+
+- Une configuration longue dans une variable d'environnement est moins lisible qu'un fichier dédié.
+- Les variables d'environnement peuvent apparaître dans les outils d'inspection (`docker inspect`).
+- Si vous préférez éviter les variables d'environnement, vous pouvez :
+  - **Image personnalisée** : créer un `Dockerfile` basé sur `nginx:alpine` qui copie `default.conf`
+    dans l'image et publier cette image (ex. `ghcr.io/vbrunelle/jerry-can-nginx:latest`), puis
+    remplacer `image: nginx:alpine` dans `docker-compose.yml`.
+  - **Docker Configs** (mode Swarm uniquement) : utiliser `docker config create` pour stocker la
+    configuration et la monter via `configs:` dans le compose.
 
 ## Utilisation
 
