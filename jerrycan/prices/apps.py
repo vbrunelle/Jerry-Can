@@ -24,6 +24,18 @@ class PricesConfig(AppConfig):
     name = 'prices'
 
     def ready(self):
+        from django.db.backends.signals import connection_created
+
+        def _set_sqlite_pragmas(sender, connection, **kwargs):
+            """Set SQLite performance pragmas on every new connection."""
+            if connection.vendor == 'sqlite':
+                with connection.cursor() as cur:
+                    cur.execute('PRAGMA synchronous=NORMAL')
+                    cur.execute('PRAGMA temp_store=MEMORY')
+                    cur.execute('PRAGMA cache_size=-65536')  # 64 MB
+
+        connection_created.connect(_set_sqlite_pragmas)
+
         import sys
         # Start background threads when running the dev server or gunicorn.
         # Excluded: migrate, shell, test, and any other management commands.

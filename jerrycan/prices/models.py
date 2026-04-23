@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import models, transaction
+from django.db import connection, models, transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -393,91 +393,64 @@ class AnalysisTransferTask(models.Model):
         self.analysis = analysis
         self.save(update_fields=['analysis'])
 
-        # Fuels: get_or_create by name, build ID mapping
+        # Fuels: get_or_create by name, build ID mapping (fast, only a handful of fuels)
         fuel_id_map = {}
         for fuel_data in data.get('fuels', []):
             fuel, _ = Fuel.objects.get_or_create(name=fuel_data['name'])
             fuel_id_map[fuel_data['id']] = fuel.pk
 
-        # Stations: bulk_create, build ID mapping
-        station_id_map = {}
-        station_objs = []
-        for s in data.get('stations', []):
-            station_objs.append(Station(
-                name=s['name'],
-                city=s['city'],
-                region=s['region'],
-                adress=s['adress'],
-                longitude=s['longitude'],
-                latitude=s['latitude'],
-                analysis=analysis,
-            ))
-        BATCH = 2000
-        idx = 0
-        station_data_list = data.get('stations', [])
-        for i in range(0, len(station_objs), BATCH):
-            created = Station.objects.bulk_create(station_objs[i:i + BATCH])
-            for j, obj in enumerate(created):
-                old_id = station_data_list[idx]['id']
-                station_id_map[old_id] = obj.pk
-                idx += 1
-
-        # Snapshots: bulk_create, then fix timestamps
-        snapshot_id_map = {}
-        snapshot_objs = []
-        snapshot_data_list = data.get('snapshots', [])
-        for snap in data.get('snapshots', []):
-            snapshot_objs.append(Snapshot(
-                analysis=analysis,
-                status=snap.get('status', Snapshot.Status.PROCESSED),
-            ))
-
-        created_snapshots = []
-        idx = 0
-        for i in range(0, len(snapshot_objs), BATCH):
-            created = Snapshot.objects.bulk_create(snapshot_objs[i:i + BATCH])
-            created_snapshots.extend(created)
-            for j, obj in enumerate(created):
-                old_id = snapshot_data_list[idx]['id']
-                snapshot_id_map[old_id] = obj.pk
-                idx += 1
-
-        # Fix snapshot timestamps using model-level bulk_update.
-        # This preserves original snapshot capture time instead of import time.
-        for obj, snap in zip(created_snapshots, snapshot_data_list):
-            ts_str = snap['timestamp']
-            ts_val = timezone.datetime.fromisoformat(ts_str)
-            if timezone.is_naive(ts_val):
-                ts_val = timezone.make_aware(ts_val)
-            obj.timestamp = ts_val
-
-        if created_snapshots:
-            for i in range(0, len(created_snapshots), BATCH):
-                Snapshot.objects.bulk_update(
-                    created_snapshots[i:i + BATCH],
-                    ['timestamp'],
-                    batch_size=BATCH,
+        # All bulk inserts share a single transaction → one fsync instead of hundreds
+        with transaction.atomic():
+            # Stations: bulk_create with large batches
+            station_id_map = {}
+            station_data_list = data.get('stations', [])
+            station_objs = [
+                Station(
+                    name=s['name'], city=s['city'], region=s['region'],
+                    adress=s['adress'], longitude=s['longitude'],
+                    latitude=s['latitude'], analysis=analysis,
                 )
+                for s in station_data_list
+            ]
+            idx = 0
+            for i in range(0, len(station_objs), 10000):
+                created = Station.objects.bulk_create(station_objs[i:i + 10000])
+                for obj in created:
+                    station_id_map[station_data_list[idx]['id']] = obj.pk
+                    idx += 1
 
-        # Prices: bulk_create in batches
-        price_batch = []
-        for pr in data.get('prices', []):
-            mapped_station = station_id_map.get(pr['station_id'])
-            mapped_fuel = fuel_id_map.get(pr['fuel_id'])
-            mapped_snapshot = snapshot_id_map.get(pr['snapshot_id'])
-            if mapped_station is None or mapped_fuel is None or mapped_snapshot is None:
-                continue
-            price_batch.append(Price(
-                station_id=mapped_station,
-                fuel_id=mapped_fuel,
-                snapshot_id=mapped_snapshot,
-                price=pr['price'],
-            ))
-            if len(price_batch) >= BATCH:
-                Price.objects.bulk_create(price_batch)
-                price_batch = []
-        if price_batch:
-            Price.objects.bulk_create(price_batch)
+            # Snapshots: bulk_create with large batches
+            snapshot_id_map = {}
+            snapshot_data_list = data.get('snapshots', [])
+            snapshot_objs = [
+                Snapshot(analysis=analysis, status=snap.get('status', Snapshot.Status.PROCESSED))
+                for snap in snapshot_data_list
+            ]
+            idx = 0
+            for i in range(0, len(snapshot_objs), 10000):
+                created = Snapshot.objects.bulk_create(snapshot_objs[i:i + 10000])
+                for obj in created:
+                    snapshot_id_map[snapshot_data_list[idx]['id']] = obj.pk
+                    idx += 1
+
+            # Prices: raw SQL executemany with a generator — skips creating 24M Price()
+            # objects and all ORM overhead; single transaction means one final fsync.
+            price_table = Price._meta.db_table
+            price_sql = (
+                f"INSERT INTO {price_table} (station_id, fuel_id, snapshot_id, price) "
+                f"VALUES (%s, %s, %s, %s)"
+            )
+
+            def _price_rows():
+                for pr in data.get('prices', []):
+                    ms = station_id_map.get(pr['station_id'])
+                    mf = fuel_id_map.get(pr['fuel_id'])
+                    mn = snapshot_id_map.get(pr['snapshot_id'])
+                    if ms is not None and mf is not None and mn is not None:
+                        yield (ms, mf, mn, pr['price'])
+
+            with connection.cursor() as cursor:
+                cursor.executemany(price_sql, _price_rows())
 
 
 class ChunkedUpload(models.Model):
