@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -34,7 +35,7 @@ class Snapshot(models.Model):
         PROCESSED   = 'processed',   'Processed'
         ERROR       = 'error',       'Error'
 
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(default=timezone.now)
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
@@ -549,7 +550,11 @@ class AnalysisTransferTask(models.Model):
             snapshot_id_map = {}
             snapshot_data_list = data.get('snapshots', [])
             snapshot_objs = [
-                Snapshot(analysis=analysis, status=snap.get('status', Snapshot.Status.PROCESSED))
+                Snapshot(
+                    analysis=analysis,
+                    status=snap.get('status', Snapshot.Status.PROCESSED),
+                    timestamp=datetime.fromisoformat(snap['timestamp']) if isinstance(snap.get('timestamp'), str) else snap.get('timestamp'),
+                )
                 for snap in snapshot_data_list
             ]
             idx = 0
