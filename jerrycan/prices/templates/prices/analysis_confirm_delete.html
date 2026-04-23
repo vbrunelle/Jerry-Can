@@ -1,0 +1,40 @@
+{% extends "prices/base.html" %}
+{% block title %}Delete Analysis #{{ object.pk }}{% endblock %}
+{% block nav_analysis %}active{% endblock %}
+{% block page_title %}Delete Analysis #{{ object.pk }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card border-danger">
+      <div class="card-header bg-danger-lt">
+        <h3 class="card-title text-danger">Confirm Deletion</h3>
+      </div>
+      <div class="card-body">
+        <p>Are you sure you want to delete <strong>Analysis #{{ object.pk }}</strong>?</p>
+        <p class="text-muted small">
+          This will permanently delete all associated snapshots, stations, prices, and transfer tasks.
+          Any running import or export tasks will be cancelled first.
+          This action cannot be undone.
+        </p>
+        {% with running_tasks=object.transfer_tasks.all %}
+        {% for task in running_tasks %}
+          {% if task.status == 'pending' or task.status == 'running' %}
+          <div class="alert alert-warning py-2 small">
+            <strong>Warning:</strong> A {{ task.get_task_type_display|lower }} task is currently {{ task.status }} and will be cancelled.
+          </div>
+          {% endif %}
+        {% endfor %}
+        {% endwith %}
+        <form method="post">
+          {% csrf_token %}
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-danger">Yes, delete permanently</button>
+            <a href="{% url 'prices:analysis_detail' object.pk %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

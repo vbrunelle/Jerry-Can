@@ -11,6 +11,12 @@
   </a>
 </div>
 <div class="col-auto">
+  <a href="{% url 'prices:analysis_delete' object.pk %}" class="btn btn-outline-danger">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+    Delete
+  </a>
+</div>
+<div class="col-auto">
   <form method="post" action="{% url 'prices:export_analysis' object.pk %}">
     {% csrf_token %}
     <button type="submit" class="btn btn-outline-info">
@@ -94,6 +100,7 @@
               </td>
               <td>{{ task.created_at|date:"Y-m-d H:i" }}</td>
               <td>
+                <a href="{% url 'prices:transfer_task_status' task.pk %}" class="btn btn-sm btn-outline-secondary">Task page</a>
                 {% if task.task_type == 'export' and task.status == 'completed' %}
                 <a href="{% url 'prices:download_export' task.pk %}" class="btn btn-sm btn-outline-primary">Download</a>
                 {% endif %}
@@ -118,7 +125,7 @@
             <tr><th>#</th><th>Timestamp</th><th>Status</th><th>Prices</th><th></th></tr>
           </thead>
           <tbody>
-            {% for snapshot in object.snapshots.all %}
+            {% for snapshot in snapshots_page_obj %}
             <tr>
               <td>{{ snapshot.pk }}</td>
               <td>{{ snapshot.timestamp|date:"Y-m-d H:i:s" }}</td>
@@ -129,7 +136,7 @@
                 {% elif snapshot.status == 'error' %}<span class="badge bg-danger-lt">Error</span>
                 {% else %}<span class="badge bg-secondary-lt">{{ snapshot.status }}</span>{% endif %}
               </td>
-              <td>{{ snapshot.prices.count }}</td>
+              <td>{{ snapshot.price_count }}</td>
               <td><a href="{% url 'prices:snapshot_detail' snapshot.pk %}" class="btn btn-sm btn-outline-primary">View</a></td>
             </tr>
             {% empty %}
@@ -138,6 +145,21 @@
           </tbody>
         </table>
       </div>
+      {% if snapshots_page_obj.paginator.num_pages > 1 %}
+      <div class="card-footer d-flex justify-content-between align-items-center">
+        <div class="text-muted small">
+          Page {{ snapshots_page_obj.number }} of {{ snapshots_page_obj.paginator.num_pages }}
+        </div>
+        <div class="btn-group" role="group" aria-label="Analysis snapshot pagination">
+          {% if snapshots_page_obj.has_previous %}
+          <a href="?snapshot_page={{ snapshots_page_obj.previous_page_number }}" class="btn btn-outline-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% if snapshots_page_obj.has_next %}
+          <a href="?snapshot_page={{ snapshots_page_obj.next_page_number }}" class="btn btn-outline-secondary btn-sm">Next</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
