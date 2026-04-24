@@ -2,6 +2,7 @@ import gzip
 import ijson
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -565,55 +566,73 @@ class AnalysisTransferTask(models.Model):
         filepath = self.file_path
         self._log('Reading archive', detail='Reading archive', progress=5)
 
-        # --- Pass 1: read all small sections (version, analysis, fuels,
-        #             stations, snapshots) using ijson prefix parsing.
-        #             The prices array is intentionally skipped here; it is
-        #             consumed as a stream in Pass 2 to avoid loading millions
-        #             of dicts into memory at once.
+        # --- Pass 1: read all sections except prices in a single file open.
+        #
+        # The export format is ordered: version → analysis → fuels → stations
+        # → snapshots → prices.  We parse with ijson.parse, collecting the small
+        # sections as plain dicts/lists, and break as soon as we encounter the
+        # start of the prices array.  This keeps Pass 1 to O(stations + snapshots)
+        # memory — typically a few MB even for large datasets.
+        version = 1
+        analysis_data = {}
+        fuels_list = []
+        stations_list = []
+        snapshots_list = []
+
         with gzip.open(filepath, 'rb') as f:
-            header = {
-                'version': None,
-                'analysis': None,
-                'fuels': [],
-                'stations': [],
-                'snapshots': [],
-            }
             for prefix, event, value in ijson.parse(f):
+                # version (top-level scalar)
                 if prefix == 'version' and event in ('number', 'integer'):
-                    header['version'] = int(value)
-                elif prefix == 'analysis' and event == 'end_map':
-                    # analysis object was collected by the map_builder below
-                    pass
-                elif prefix == 'fuels.item' and event == 'end_map':
-                    pass
-                elif prefix == 'stations.item' and event == 'end_map':
-                    pass
-                elif prefix == 'snapshots.item' and event == 'end_map':
-                    pass
-                # Stop once we reach the prices array to avoid reading it here.
+                    version = int(value)
+
+                # analysis (flat dict)
+                elif prefix.startswith('analysis.') and event not in (
+                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
+                ):
+                    subkey = prefix[len('analysis.'):]
+                    if '.' not in subkey:
+                        analysis_data[subkey] = value
+
+                # fuels (list of flat dicts)
+                elif prefix == 'fuels.item' and event == 'start_map':
+                    fuels_list.append({})
+                elif prefix.startswith('fuels.item.') and event not in (
+                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
+                ):
+                    subkey = prefix[len('fuels.item.'):]
+                    if fuels_list and '.' not in subkey:
+                        fuels_list[-1][subkey] = value
+
+                # stations (list of flat dicts)
+                elif prefix == 'stations.item' and event == 'start_map':
+                    stations_list.append({})
+                elif prefix.startswith('stations.item.') and event not in (
+                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
+                ):
+                    subkey = prefix[len('stations.item.'):]
+                    if stations_list and '.' not in subkey:
+                        stations_list[-1][subkey] = value
+
+                # snapshots (list of flat dicts)
+                elif prefix == 'snapshots.item' and event == 'start_map':
+                    snapshots_list.append({})
+                elif prefix.startswith('snapshots.item.') and event not in (
+                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
+                ):
+                    subkey = prefix[len('snapshots.item.'):]
+                    if snapshots_list and '.' not in subkey:
+                        snapshots_list[-1][subkey] = value
+
+                # Stop before the prices array – do not materialise it here.
                 elif prefix == 'prices' and event == 'start_array':
                     break
-
-        # Re-open and collect the small sections properly with ijson.items.
-        with gzip.open(filepath, 'rb') as f:
-            version_list = list(ijson.items(f, 'version'))
-        with gzip.open(filepath, 'rb') as f:
-            analysis_list = list(ijson.items(f, 'analysis'))
-        with gzip.open(filepath, 'rb') as f:
-            fuels_list = list(ijson.items(f, 'fuels.item'))
-        with gzip.open(filepath, 'rb') as f:
-            stations_list = list(ijson.items(f, 'stations.item'))
-        with gzip.open(filepath, 'rb') as f:
-            snapshots_list = list(ijson.items(f, 'snapshots.item'))
 
         self._check_cancel_requested()
         self._log('Archive loaded', detail='Validating archive', progress=8)
 
-        version = version_list[0] if version_list else 1
         if version != 1:
             raise ValueError(f"Unsupported export version: {version}")
 
-        analysis_data = analysis_list[0] if analysis_list else {}
         should_activate = bool(analysis_data.get('active', False))
         self._log('Creating analysis record', detail='Creating analysis', progress=10)
 
@@ -706,9 +725,10 @@ class AnalysisTransferTask(models.Model):
 
         # --- Pass 2: stream the prices array one item at a time with ijson.
         #
-        # The total price count is unknown without loading the full array first,
-        # so we report progress in terms of inserted rows only (no denominator).
-        # This avoids the memory spike caused by collecting all prices up front.
+        # Total price count is not known in advance (loading all prices to count
+        # them would defeat streaming), so progress is reported as a log-scale
+        # estimate: it starts at 60 % and asymptotically approaches 95 % as more
+        # rows are inserted, giving useful feedback without a denominator.
         price_table = Price._meta.db_table
         price_sql = (
             f"INSERT INTO {price_table} (station_id, fuel_id, snapshot_id, price) "
@@ -736,16 +756,19 @@ class AnalysisTransferTask(models.Model):
                     inserted_prices += len(batch)
                     batch.clear()
                     if inserted_prices >= next_log_threshold:
-                        progress = min(95, 60 + int((inserted_prices / max(inserted_prices, 1)) * 35))
-                        self.status_detail = f'Importing prices ({inserted_prices:,} inserted…)'
-                        self.progress_percent = max(60, progress)
+                        # Log-scale progress: approaches 95 % asymptotically.
+                        # Each decade of rows adds ~8 percentage points.
+                        progress = min(94, 60 + int(math.log10(inserted_prices + 1) * 8))
+                        detail = f'Importing prices ({inserted_prices:,} inserted…)'
+                        self.status_detail = detail
+                        self.progress_percent = progress
                         self.save(update_fields=['status_detail', 'progress_percent'])
                         self._log(
                             f'Prices inserted: {inserted_prices:,}',
-                            detail=self.status_detail,
-                            progress=self.progress_percent,
+                            detail=detail,
+                            progress=progress,
                         )
-                        next_log_threshold += batch_size * 10
+                        next_log_threshold = inserted_prices * 2
 
             if batch:
                 self._check_cancel_requested()
