@@ -566,6 +566,12 @@ class AnalysisTransferTask(models.Model):
         filepath = self.file_path
         self._log('Reading archive', detail='Reading archive', progress=5)
 
+        # ijson event types that carry no scalar value — used to skip structural
+        # tokens when collecting flat dict fields from the parse event stream.
+        _STRUCTURAL_EVENTS = frozenset(
+            ('start_map', 'end_map', 'start_array', 'end_array', 'map_key')
+        )
+
         # --- Pass 1: read all sections except prices in a single file open.
         #
         # The export format is ordered: version → analysis → fuels → stations
@@ -586,9 +592,7 @@ class AnalysisTransferTask(models.Model):
                     version = int(value)
 
                 # analysis (flat dict)
-                elif prefix.startswith('analysis.') and event not in (
-                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
-                ):
+                elif prefix.startswith('analysis.') and event not in _STRUCTURAL_EVENTS:
                     subkey = prefix[len('analysis.'):]
                     if '.' not in subkey:
                         analysis_data[subkey] = value
@@ -596,9 +600,7 @@ class AnalysisTransferTask(models.Model):
                 # fuels (list of flat dicts)
                 elif prefix == 'fuels.item' and event == 'start_map':
                     fuels_list.append({})
-                elif prefix.startswith('fuels.item.') and event not in (
-                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
-                ):
+                elif prefix.startswith('fuels.item.') and event not in _STRUCTURAL_EVENTS:
                     subkey = prefix[len('fuels.item.'):]
                     if fuels_list and '.' not in subkey:
                         fuels_list[-1][subkey] = value
@@ -606,9 +608,7 @@ class AnalysisTransferTask(models.Model):
                 # stations (list of flat dicts)
                 elif prefix == 'stations.item' and event == 'start_map':
                     stations_list.append({})
-                elif prefix.startswith('stations.item.') and event not in (
-                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
-                ):
+                elif prefix.startswith('stations.item.') and event not in _STRUCTURAL_EVENTS:
                     subkey = prefix[len('stations.item.'):]
                     if stations_list and '.' not in subkey:
                         stations_list[-1][subkey] = value
@@ -616,9 +616,7 @@ class AnalysisTransferTask(models.Model):
                 # snapshots (list of flat dicts)
                 elif prefix == 'snapshots.item' and event == 'start_map':
                     snapshots_list.append({})
-                elif prefix.startswith('snapshots.item.') and event not in (
-                    'start_map', 'end_map', 'start_array', 'end_array', 'map_key',
-                ):
+                elif prefix.startswith('snapshots.item.') and event not in _STRUCTURAL_EVENTS:
                     subkey = prefix[len('snapshots.item.'):]
                     if snapshots_list and '.' not in subkey:
                         snapshots_list[-1][subkey] = value
@@ -756,8 +754,11 @@ class AnalysisTransferTask(models.Model):
                     inserted_prices += len(batch)
                     batch.clear()
                     if inserted_prices >= next_log_threshold:
-                        # Log-scale progress: approaches 95 % asymptotically.
-                        # Each decade of rows adds ~8 percentage points.
+                        # Log-scale progress between 60 % (start) and 94 % (cap before
+                        # the final 95 % logged after the loop).  The coefficient 8 was
+                        # chosen so that 10 000 rows → ~32 %, 1 000 000 rows → ~48 %,
+                        # giving perceptible movement even for very large imports where
+                        # the total row count is unknown in advance.
                         progress = min(94, 60 + int(math.log10(inserted_prices + 1) * 8))
                         detail = f'Importing prices ({inserted_prices:,} inserted…)'
                         self.status_detail = detail
