@@ -1,9 +1,14 @@
+import logging
 import math
 import os
+import threading
+import time
 import uuid
 from datetime import datetime
 import json
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.views import PasswordChangeView
@@ -176,41 +181,170 @@ def _prices_to_list(prices_qs):
     ]
 
 
-def _sqlite_object_size_bytes(cursor, object_name):
+def _sqlite_sizes_for_tables(cursor, table_names):
+    """Return {name: bytes} for each table and its indexes in a single dbstat query."""
+    # Collect all index names for the requested tables
+    all_names = list(table_names)
+    for table_name in table_names:
+        cursor.execute(f"PRAGMA index_list({table_name})")
+        for row in cursor.fetchall():
+            all_names.append(row[1])  # index name
+
+    # One single full-table scan of dbstat, filtered to only the names we care about
+    placeholders = ",".join(["%s"] * len(all_names))
     cursor.execute(
-        "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name = %s",
-        [object_name],
+        f"SELECT name, COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name IN ({placeholders}) GROUP BY name",
+        all_names,
     )
-    row = cursor.fetchone()
-    return int(row[0] or 0)
+    return {row[0]: int(row[1]) for row in cursor.fetchall()}
 
 
-def _sqlite_table_size_with_indexes_bytes(cursor, table_name):
-    total = _sqlite_object_size_bytes(cursor, table_name)
+def _sqlite_table_size_with_indexes_bytes(sizes_map, cursor, table_name):
+    """Sum table + all its index sizes from the pre-fetched sizes_map."""
+    total = sizes_map.get(table_name, 0)
     cursor.execute(f"PRAGMA index_list({table_name})")
-    for _, index_name, *_ in cursor.fetchall():
-        total += _sqlite_object_size_bytes(cursor, index_name)
+    for row in cursor.fetchall():
+        total += sizes_map.get(row[1], 0)
     return total
 
 
-def _analysis_storage_estimate(analysis):
-    """Estimate on-disk SQLite size attributable to one analysis and linked rows.
+# ---------------------------------------------------------------------------
+# Per-analysis storage-estimate cache (non-blocking background computation)
+# ---------------------------------------------------------------------------
+# dbstat on a large SQLite file takes ~62 s.  Running it synchronously in the
+# request thread causes nginx to time-out (60 s proxy_read_timeout → 504).
+#
+# Strategy:
+#   • The request thread checks a module-level cache.  If a fresh result
+#     exists it is returned immediately.
+#   • If the cache is cold (or stale) a daemon background thread is spawned
+#     to run the slow computation.  The request thread returns straight away
+#     with available=False so the page loads in < 1 s.
+#   • When the background thread finishes it populates the cache; the next
+#     request will get the real estimate.
+#   • If an import task is RUNNING the estimate is skipped entirely (guard
+#     against holding a read lock that would block the importer's writes).
+# ---------------------------------------------------------------------------
 
-    This is a proportional estimate based on row share in each table, including indexes.
+_ESTIMATE_TTL = 300  # seconds before a cached entry is considered stale
+_estimate_cache: dict = {}   # {analysis_pk: (monotonic_time, result_dict)}
+_estimate_threads: dict = {} # {analysis_pk: True}  — present while bg thread is running
+_estimate_lock = threading.Lock()  # guards both dicts above
+
+
+def _analysis_storage_estimate(analysis):
+    """Return an on-disk size estimate for *analysis* — never blocks the request thread.
+
+    On the first call (cache cold), a background daemon thread is spawned to
+    compute the estimate (which may take > 60 s on a large SQLite file) while
+    this function returns immediately with {'available': False}.  Subsequent
+    requests within _ESTIMATE_TTL seconds receive the cached result at once.
+
+    If any import task is RUNNING the estimate is skipped outright to avoid
+    holding a SQLite read lock that would interfere with the import's writes.
     """
+    # Guard: skip while an import is in progress (avoids table-lock contention)
+    if AnalysisTransferTask.objects.filter(
+        task_type=AnalysisTransferTask.TaskType.IMPORT,
+        status=AnalysisTransferTask.Status.RUNNING,
+    ).exists():
+        logger.info("storage_estimate analysis #%s: skipped (import running)", analysis.pk)
+        return {
+            'available': False,
+            'reason': 'Storage estimate unavailable while imports are running.',
+        }
+
     if connection.vendor != 'sqlite':
         return {
             'available': False,
             'reason': 'Storage estimate is currently available for SQLite only.',
         }
 
+    pk = analysis.pk
+    now = time.monotonic()
+
+    with _estimate_lock:
+        cached = _estimate_cache.get(pk)
+        if cached is not None:
+            computed_at, result = cached
+            if now - computed_at < _ESTIMATE_TTL:
+                return result  # fresh cache hit — return immediately
+
+        # Cache cold or stale: spawn background computation if not already running
+        if pk not in _estimate_threads:
+            _estimate_threads[pk] = True
+            t = threading.Thread(
+                target=_compute_storage_estimate_bg,
+                args=(pk,),
+                daemon=True,
+                name=f"storage-estimate-{pk}",
+            )
+            t.start()
+            logger.info("storage_estimate analysis #%s: background thread started", pk)
+
+    return {
+        'available': False,
+        'reason': 'Storage estimate is being computed in the background…',
+    }
+
+
+def _compute_storage_estimate_bg(analysis_pk):
+    """Background worker: run the slow dbstat query and update the module-level cache.
+
+    Runs in a daemon thread; uses its own Django DB connection (thread-local)
+    and closes it on exit to avoid leaking file handles.
+    """
+    from django.db import close_old_connections
+
+    result = {
+        'available': False,
+        'reason': 'Storage estimate computation failed.',
+    }
+    try:
+        close_old_connections()  # ensure a fresh connection in this thread
+        analysis = Analysis.objects.get(pk=analysis_pk)
+        result = _analysis_storage_estimate_sync(analysis)
+    except Exception:
+        logger.exception(
+            "storage_estimate analysis #%s: background computation failed", analysis_pk
+        )
+    finally:
+        try:
+            connection.close()  # release the thread's SQLite connection
+        except Exception:
+            pass
+        with _estimate_lock:
+            _estimate_cache[analysis_pk] = (time.monotonic(), result)
+            _estimate_threads.pop(analysis_pk, None)
+        logger.info(
+            "storage_estimate analysis #%s: background computation done, cache updated",
+            analysis_pk,
+        )
+
+
+def _analysis_storage_estimate_sync(analysis):
+    """Blocking estimation of on-disk SQLite size for *analysis*.
+
+    Runs a full dbstat scan which can take > 60 s on a multi-GB database.
+    Must only be called from a background thread, never from the request thread.
+    """
+    t_start = time.perf_counter()
+
     # Use only analysis-owned tables. Fuel is shared globally across analyses.
     # price_count is cached on Snapshot, so summing it is O(snapshots) not O(prices).
+    t1 = time.perf_counter()
     own_snapshots = analysis.snapshots.count()
     total_snapshots = Snapshot.objects.count()
     own_prices = analysis.snapshots.aggregate(total=Sum('price_count'))['total'] or 0
-    total_prices = Price.objects.count()
+    # Use sum of all cached price_counts to avoid a full COUNT(*) on tens of millions of rows
+    total_prices = Snapshot.objects.aggregate(total=Sum('price_count'))['total'] or 0
+    logger.debug(
+        "storage_estimate analysis #%s: row counts in %.3fs "
+        "(own_snapshots=%d, own_prices=%d, total_prices=%d)",
+        analysis.pk, time.perf_counter() - t1, own_snapshots, own_prices, total_prices,
+    )
 
+    table_names = ['prices_analysis', 'prices_snapshot', 'prices_station', 'prices_price']
     table_stats = [
         ('Analysis', 'prices_analysis', 1, Analysis.objects.count()),
         ('Snapshots', 'prices_snapshot', own_snapshots, total_snapshots),
@@ -220,9 +354,11 @@ def _analysis_storage_estimate(analysis):
 
     breakdown = []
     total_estimated = 0
+    t2 = time.perf_counter()
     with connection.cursor() as cursor:
+        sizes_map = _sqlite_sizes_for_tables(cursor, table_names)
         for label, table_name, own_rows, total_rows in table_stats:
-            table_total_bytes = _sqlite_table_size_with_indexes_bytes(cursor, table_name)
+            table_total_bytes = _sqlite_table_size_with_indexes_bytes(sizes_map, cursor, table_name)
             ratio = (own_rows / total_rows) if total_rows else 0
             estimated_bytes = int(table_total_bytes * ratio)
             total_estimated += estimated_bytes
@@ -233,7 +369,16 @@ def _analysis_storage_estimate(analysis):
                 'total_rows': total_rows,
                 'estimated_bytes': estimated_bytes,
             })
+    logger.debug(
+        "storage_estimate analysis #%s: dbstat query in %.3fs",
+        analysis.pk, time.perf_counter() - t2,
+    )
 
+    elapsed = time.perf_counter() - t_start
+    logger.info(
+        "storage_estimate analysis #%s: completed in %.3fs — estimated %d bytes",
+        analysis.pk, elapsed, total_estimated,
+    )
     return {
         'available': True,
         'estimated_total_bytes': total_estimated,
@@ -272,21 +417,85 @@ class AnalysisDetailView(DetailView):
     template_name = "prices/analysis_detail.html"
 
     def get_context_data(self, **kwargs):
+        t_total = time.perf_counter()
         ctx = super().get_context_data(**kwargs)
-        snapshots_qs = (
-            self.object.snapshots
-            .order_by('-timestamp', '-pk')
-        )
-        paginator = Paginator(snapshots_qs, SNAPSHOTS_PER_PAGE)
-        snapshots_page_obj = paginator.get_page(self.request.GET.get('snapshot_page', 1))
 
+        # Offset/limit pagination — avoids an implicit COUNT(*) on all snapshots.
+        SNAPSHOTS_PER_PAGE_LOCAL = 50
+        page_num = self.request.GET.get('snapshot_page', 1)
+        try:
+            page_num = int(page_num)
+        except (ValueError, TypeError):
+            page_num = 1
+
+        offset = (page_num - 1) * SNAPSHOTS_PER_PAGE_LOCAL
+        t1 = time.perf_counter()
+        snapshots_list = list(
+            self.object.snapshots
+            .values('pk', 'id', 'timestamp', 'status', 'price_count')
+            .order_by('-timestamp', '-pk')[offset:offset + SNAPSHOTS_PER_PAGE_LOCAL + 1]
+        )
+        logger.debug(
+            "AnalysisDetailView #%s: snapshot page query in %.3fs (%d rows)",
+            self.object.pk, time.perf_counter() - t1, len(snapshots_list),
+        )
+
+        has_next = len(snapshots_list) > SNAPSHOTS_PER_PAGE_LOCAL
+        if has_next:
+            snapshots_list = snapshots_list[:SNAPSHOTS_PER_PAGE_LOCAL]
+
+        class SimplePage:
+            """Offset/limit page used instead of Django's Paginator to avoid
+            an implicit COUNT(*) on the full snapshots table.
+
+            Exposes the subset of the Django Page/Paginator API that the
+            analysis_detail template actually uses:
+              - iteration over object_list
+              - .number, .has_previous, .has_next, .has_other_pages
+              - .previous_page_number(), .next_page_number()
+              - .paginator.num_pages  (self acts as its own paginator)
+            """
+            def __init__(self, object_list, number, has_next):
+                self.object_list = object_list
+                self.number = number
+                self.has_next = has_next
+                self.has_previous = number > 1
+                self.has_other_pages = has_next or self.has_previous
+                # num_pages: we know there is at least one more page when
+                # has_next is True; we do not know the exact total without a
+                # COUNT(*), so we report current+1 to keep pagination visible.
+                self.num_pages = number + (1 if has_next else 0)
+                self.paginator = self  # template uses page.paginator.num_pages
+
+            def __iter__(self):
+                return iter(self.object_list)
+
+            def previous_page_number(self):
+                return self.number - 1
+
+            def next_page_number(self):
+                return self.number + 1
+
+        snapshots_page_obj = SimplePage(snapshots_list, page_num, has_next)
+
+        t2 = time.perf_counter()
         ctx['storage_estimate'] = _analysis_storage_estimate(self.object)
+        logger.debug(
+            "AnalysisDetailView #%s: storage_estimate in %.3fs",
+            self.object.pk, time.perf_counter() - t2,
+        )
+
         ctx['transfer_tasks'] = (
             AnalysisTransferTask.objects
             .filter(analysis=self.object)
             .order_by('-created_at')[:10]
         )
         ctx['snapshots_page_obj'] = snapshots_page_obj
+
+        logger.info(
+            "AnalysisDetailView #%s: get_context_data completed in %.3fs",
+            self.object.pk, time.perf_counter() - t_total,
+        )
         return ctx
 
 

@@ -1,9 +1,12 @@
 import gzip
 import json
+import logging
 import os
 import threading
 import time
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 import requests
@@ -179,22 +182,27 @@ class Analysis(models.Model):
         return thread
 
     def _run_analysis(self):
+        logger.info("Analysis #%s: background thread started", self.pk)
         while True:
             # Re-read from DB on every iteration to pick up field changes.
             try:
                 analysis = Analysis.objects.get(pk=self.pk)
             except Analysis.DoesNotExist:
+                logger.info("Analysis #%s: no longer exists, stopping thread", self.pk)
                 break
             if not analysis.run_automatically:
+                logger.info("Analysis #%s: run_automatically=False, stopping thread", self.pk)
                 break
 
             snapshot = Snapshot.objects.create(
                 analysis=analysis,
                 status=Snapshot.Status.DOWNLOADING,
             )
+            logger.info("Analysis #%s: snapshot #%s created, fetching data", self.pk, snapshot.pk)
             try:
                 data = analysis._fetch_data()
             except Exception:
+                logger.exception("Analysis #%s: snapshot #%s fetch failed", self.pk, snapshot.pk)
                 snapshot.status = Snapshot.Status.ERROR
                 snapshot.save(update_fields=['status'])
                 time.sleep(analysis.update_frequency * 60)
@@ -202,9 +210,11 @@ class Analysis(models.Model):
 
             snapshot.status = Snapshot.Status.PROCESSING
             snapshot.save(update_fields=['status'])
+            logger.info("Analysis #%s: snapshot #%s populating %d records", self.pk, snapshot.pk, len(data))
             try:
                 snapshot.populate(data)
             except Exception:
+                logger.exception("Analysis #%s: snapshot #%s populate failed", self.pk, snapshot.pk)
                 snapshot.status = Snapshot.Status.ERROR
                 snapshot.save(update_fields=['status'])
                 time.sleep(analysis.update_frequency * 60)
@@ -213,6 +223,7 @@ class Analysis(models.Model):
             snapshot.status = Snapshot.Status.PROCESSED
             snapshot.price_count = Price.objects.filter(snapshot=snapshot).count()
             snapshot.save(update_fields=['status', 'price_count'])
+            logger.info("Analysis #%s: snapshot #%s completed, %d prices recorded", self.pk, snapshot.pk, snapshot.price_count)
             time.sleep(analysis.update_frequency * 60)
 
     def _fetch_data(self):
@@ -220,9 +231,12 @@ class Analysis(models.Model):
 
         Each row represents one station with its coordinates and fuel prices as columns.
         """
+        logger.debug("Analysis #%s: GET %s", self.pk, self.data_source_url)
+        t0 = time.time()
         headers = {"User-Agent": "JerryCan/1.0 (fuel price tracker)"}
         response = requests.get(self.data_source_url, timeout=30, headers=headers)
         response.raise_for_status()
+        logger.debug("Analysis #%s: HTTP %s received in %.1fs (%d bytes)", self.pk, response.status_code, time.time() - t0, len(response.content))
 
         try:
             raw = gzip.decompress(response.content)
@@ -237,6 +251,7 @@ class Analysis(models.Model):
             record = {**props, 'longitude': coords[0], 'latitude': coords[1]}
             records.append(record)
 
+        logger.debug("Analysis #%s: parsed %d station records from GeoJSON", self.pk, len(records))
         return pd.DataFrame(records)
 
 
@@ -287,6 +302,8 @@ class AnalysisTransferTask(models.Model):
             self.activity_log = f"{self.activity_log}\n{line}"
         else:
             self.activity_log = line
+
+        logger.info("[Task #%s] %s", self.pk, message)
 
         update_fields = ['activity_log']
         if detail is not None:
@@ -480,10 +497,7 @@ class AnalysisTransferTask(models.Model):
                     while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
                         msg = f'Prices export progress: {next_progress_milestone}% ({idx + 1:,}/{total_prices:,})'
                         self._log(msg, detail=self.status_detail, progress=self.progress_percent)
-                        print(f'[AnalysisTransferTask #{self.pk}] {msg}')
-                        next_progress_milestone += 5
-            
-            # Final price count update
+
             if total_prices > 0:
                 self._log(
                     f'Exported {total_prices:,} prices',
@@ -693,7 +707,6 @@ class AnalysisTransferTask(models.Model):
                                 detail=self.status_detail,
                                 progress=self.progress_percent,
                             )
-                            print(f'[AnalysisTransferTask #{self.pk}] {msg}')
                             next_progress_milestone += 5
                     batch.clear()
             if batch:
@@ -710,7 +723,6 @@ class AnalysisTransferTask(models.Model):
                     while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
                         msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
                         self._log(msg, detail=detail, progress=bounded_progress)
-                        print(f'[AnalysisTransferTask #{self.pk}] {msg}')
                         next_progress_milestone += 5
                     self._log(
                         f'Prices imported: {inserted_prices:,}/{total_prices:,}',
