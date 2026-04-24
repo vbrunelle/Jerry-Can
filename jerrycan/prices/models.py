@@ -1,9 +1,12 @@
 import gzip
 import json
+import logging
 import os
 import threading
 import time
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 import requests
@@ -54,14 +57,14 @@ class Snapshot(models.Model):
                 city = address_parts[1].strip() if len(address_parts) > 1 else ''
                 street = address_parts[0].strip()
                 station, _ = Station.objects.update_or_create(
+                    analysis=self.analysis,
                     name=row.get('Name', ''),
+                    adress=street,
                     defaults={
                         'city': city,
                         'region': row.get('Region', ''),
-                        'adress': street,
                         'longitude': row.get('longitude', 0.0),
                         'latitude': row.get('latitude', 0.0),
-                        'analysis': self.analysis,
                     }
                 )
 
@@ -179,22 +182,27 @@ class Analysis(models.Model):
         return thread
 
     def _run_analysis(self):
+        logger.info("Analysis #%s: background thread started", self.pk)
         while True:
             # Re-read from DB on every iteration to pick up field changes.
             try:
                 analysis = Analysis.objects.get(pk=self.pk)
             except Analysis.DoesNotExist:
+                logger.info("Analysis #%s: no longer exists, stopping thread", self.pk)
                 break
             if not analysis.run_automatically:
+                logger.info("Analysis #%s: run_automatically=False, stopping thread", self.pk)
                 break
 
             snapshot = Snapshot.objects.create(
                 analysis=analysis,
                 status=Snapshot.Status.DOWNLOADING,
             )
+            logger.info("Analysis #%s: snapshot #%s created, fetching data", self.pk, snapshot.pk)
             try:
                 data = analysis._fetch_data()
             except Exception:
+                logger.exception("Analysis #%s: snapshot #%s fetch failed", self.pk, snapshot.pk)
                 snapshot.status = Snapshot.Status.ERROR
                 snapshot.save(update_fields=['status'])
                 time.sleep(analysis.update_frequency * 60)
@@ -202,9 +210,11 @@ class Analysis(models.Model):
 
             snapshot.status = Snapshot.Status.PROCESSING
             snapshot.save(update_fields=['status'])
+            logger.info("Analysis #%s: snapshot #%s populating %d records", self.pk, snapshot.pk, len(data))
             try:
                 snapshot.populate(data)
             except Exception:
+                logger.exception("Analysis #%s: snapshot #%s populate failed", self.pk, snapshot.pk)
                 snapshot.status = Snapshot.Status.ERROR
                 snapshot.save(update_fields=['status'])
                 time.sleep(analysis.update_frequency * 60)
@@ -213,6 +223,7 @@ class Analysis(models.Model):
             snapshot.status = Snapshot.Status.PROCESSED
             snapshot.price_count = Price.objects.filter(snapshot=snapshot).count()
             snapshot.save(update_fields=['status', 'price_count'])
+            logger.info("Analysis #%s: snapshot #%s completed, %d prices recorded", self.pk, snapshot.pk, snapshot.price_count)
             time.sleep(analysis.update_frequency * 60)
 
     def _fetch_data(self):
@@ -220,9 +231,12 @@ class Analysis(models.Model):
 
         Each row represents one station with its coordinates and fuel prices as columns.
         """
+        logger.debug("Analysis #%s: GET %s", self.pk, self.data_source_url)
+        t0 = time.time()
         headers = {"User-Agent": "JerryCan/1.0 (fuel price tracker)"}
         response = requests.get(self.data_source_url, timeout=30, headers=headers)
         response.raise_for_status()
+        logger.debug("Analysis #%s: HTTP %s received in %.1fs (%d bytes)", self.pk, response.status_code, time.time() - t0, len(response.content))
 
         try:
             raw = gzip.decompress(response.content)
@@ -237,6 +251,7 @@ class Analysis(models.Model):
             record = {**props, 'longitude': coords[0], 'latitude': coords[1]}
             records.append(record)
 
+        logger.debug("Analysis #%s: parsed %d station records from GeoJSON", self.pk, len(records))
         return pd.DataFrame(records)
 
 
@@ -287,6 +302,8 @@ class AnalysisTransferTask(models.Model):
             self.activity_log = f"{self.activity_log}\n{line}"
         else:
             self.activity_log = line
+
+        logger.info("[Task #%s] %s", self.pk, message)
 
         update_fields = ['activity_log']
         if detail is not None:
@@ -376,46 +393,118 @@ class AnalysisTransferTask(models.Model):
             f.write(',"fuels":')
             json.dump(fuels, f)
 
-            # Stations
+            # Stations – load with pandas for speed
             f.write(',"stations":[')
-            first = True
-            for st in (Station.objects.filter(analysis=analysis)
-                       .values('id', 'name', 'city', 'region', 'adress',
-                               'longitude', 'latitude')
-                       .iterator(chunk_size=2000)):
+            stations_df = pd.read_sql(
+                """
+                SELECT id, name, city, region, adress, longitude, latitude
+                FROM prices_station
+                WHERE analysis_id = %s
+                ORDER BY id
+                """,
+                connection,
+                params=[analysis.pk],
+            )
+            
+            for idx, row in stations_df.iterrows():
                 self._check_cancel_requested()
-                if not first:
+                if idx > 0:
                     f.write(',')
-                json.dump(st, f)
-                first = False
+                station_record = {
+                    'id': int(row['id']),
+                    'name': row['name'],
+                    'city': row['city'],
+                    'region': row['region'],
+                    'adress': row['adress'],
+                    'longitude': float(row['longitude']),
+                    'latitude': float(row['latitude']),
+                }
+                json.dump(station_record, f)
             f.write(']')
 
-            # Snapshots
+            # Snapshots – load with pandas for speed
             f.write(',"snapshots":[')
-            first = True
-            for snap in (Snapshot.objects.filter(analysis=analysis)
-                         .values('id', 'timestamp', 'status')
-                         .iterator(chunk_size=2000)):
+            snapshots_df = pd.read_sql(
+                """
+                SELECT id, timestamp, status
+                FROM prices_snapshot
+                WHERE analysis_id = %s
+                ORDER BY id
+                """,
+                connection,
+                params=[analysis.pk],
+            )
+            
+            for idx, row in snapshots_df.iterrows():
                 self._check_cancel_requested()
-                if not first:
+                if idx > 0:
                     f.write(',')
-                snap['timestamp'] = snap['timestamp'].isoformat()
-                json.dump(snap, f)
-                first = False
+                snapshot_record = {
+                    'id': int(row['id']),
+                    'timestamp': row['timestamp'].isoformat() if hasattr(row['timestamp'], 'isoformat') else str(row['timestamp']),
+                    'status': row['status'],
+                }
+                json.dump(snapshot_record, f)
             f.write(']')
 
-            # Prices – streamed in chunks
+            # Prices – load in bulk with pandas (much faster, avoids DB locks)
             f.write(',"prices":[')
-            first = True
-            for pr in (Price.objects.filter(snapshot__analysis=analysis)
-                       .values('station_id', 'fuel_id', 'price', 'snapshot_id')
-                       .iterator(chunk_size=5000)):
+            self._log('Loading prices from database', detail='Loading prices', progress=50)
+            
+            # Load all prices at once with pandas (faster than iterating)
+            prices_df = pd.read_sql(
+                """
+                SELECT station_id, fuel_id, CAST(price AS FLOAT) as price, snapshot_id
+                FROM prices_price
+                WHERE snapshot_id IN (
+                    SELECT id FROM prices_snapshot WHERE analysis_id = %s
+                )
+                ORDER BY id
+                """,
+                connection,
+                params=[analysis.pk],
+            )
+            
+            total_prices = len(prices_df)
+            if total_prices:
+                self._log(f'Exporting {total_prices:,} prices', detail='Exporting prices', progress=52)
+            
+            # Write prices in batches from pandas DataFrame
+            next_progress_milestone = 5
+            for idx, row in prices_df.iterrows():
                 self._check_cancel_requested()
-                if not first:
+                
+                if idx > 0:
                     f.write(',')
-                pr['price'] = float(pr['price'])
-                json.dump(pr, f)
-                first = False
+                
+                price_record = {
+                    'station_id': int(row['station_id']),
+                    'fuel_id': int(row['fuel_id']),
+                    'price': float(row['price']),
+                    'snapshot_id': int(row['snapshot_id']),
+                }
+                json.dump(price_record, f)
+                
+                # Update progress every 10000 records to reduce DB saves
+                if total_prices and (idx + 1) % 10000 == 0:
+                    ratio = (idx + 1) / total_prices
+                    progress = 52 + int(ratio * 38)
+                    self.status_detail = f'Exporting prices ({idx + 1:,}/{total_prices:,})'
+                    self.progress_percent = max(52, min(90, progress))
+                    self.save(update_fields=['status_detail', 'progress_percent'])
+                    
+                    current_pct = int(ratio * 100)
+                    while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
+                        msg = f'Prices export progress: {next_progress_milestone}% ({idx + 1:,}/{total_prices:,})'
+                        self._log(msg, detail=self.status_detail, progress=self.progress_percent)
+
+            if total_prices > 0:
+                self._log(
+                    f'Exported {total_prices:,} prices',
+                    detail=f'Exporting prices ({total_prices:,}/{total_prices:,})',
+                    progress=90,
+                )
+            
             f.write(']')
 
             f.write('}')
@@ -618,7 +707,6 @@ class AnalysisTransferTask(models.Model):
                                 detail=self.status_detail,
                                 progress=self.progress_percent,
                             )
-                            print(f'[AnalysisTransferTask #{self.pk}] {msg}')
                             next_progress_milestone += 5
                     batch.clear()
             if batch:
@@ -635,7 +723,6 @@ class AnalysisTransferTask(models.Model):
                     while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
                         msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
                         self._log(msg, detail=detail, progress=bounded_progress)
-                        print(f'[AnalysisTransferTask #{self.pk}] {msg}')
                         next_progress_milestone += 5
                     self._log(
                         f'Prices imported: {inserted_prices:,}/{total_prices:,}',
