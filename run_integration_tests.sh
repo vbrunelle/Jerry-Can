@@ -43,11 +43,14 @@ docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" build web
 echo "==> Restarting web container with the freshly built image..."
 docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps web
 
-echo "==> Waiting for web container to be ready..."
+echo "==> Waiting for web container to be ready (HTTP)..."
 for i in $(seq 1 30); do
-    if docker exec "$JERRYCAN_TEST_CONTAINER" python -c "import django" 2>/dev/null; then
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$JERRYCAN_TEST_URL/accounts/login/" 2>/dev/null || true)
+    if [[ "$status" != "000" && "$status" != "502" && "$status" != "503" ]]; then
+        echo "    HTTP $status — gunicorn is up."
         break
     fi
+    echo "    Attempt $i/30: HTTP $status — waiting..."
     sleep 2
 done
 

@@ -1,0 +1,12 @@
+test_auto_run_not_blocked_by_running_import (prices.tests.test_large_scale.SnapshotDuringImportTest.test_auto_run_not_blocked_by_running_import)
+run_automatically background thread must create snapshots during import. ... ok
+test_force_snapshot_not_blocked_by_running_import (prices.tests.test_large_scale.SnapshotDuringImportTest.test_force_snapshot_not_blocked_by_running_import)
+POST /analyses/<pk>/snapshot/ must work even with a running import task. ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 17.030s
+
+OK
+Found 2 test(s).
+Skipping setup of unused database(s): default.
+System check identified no issues (0 silenced).

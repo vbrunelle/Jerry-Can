@@ -57,14 +57,14 @@ class Snapshot(models.Model):
                 city = address_parts[1].strip() if len(address_parts) > 1 else ''
                 street = address_parts[0].strip()
                 station, _ = Station.objects.update_or_create(
+                    analysis=self.analysis,
                     name=row.get('Name', ''),
+                    adress=street,
                     defaults={
                         'city': city,
                         'region': row.get('Region', ''),
-                        'adress': street,
                         'longitude': row.get('longitude', 0.0),
                         'latitude': row.get('latitude', 0.0),
-                        'analysis': self.analysis,
                     }
                 )
 

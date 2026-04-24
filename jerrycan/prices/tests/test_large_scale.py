@@ -55,6 +55,15 @@ IMPORT_TIME_BUDGET_SECONDS = 1800
 # well within it; 5 s leaves a 12× safety margin.
 PAGE_LOAD_BUDGET_SECONDS = 5.0
 
+# force_snapshot calls _fetch_data() (real HTTP to data source) then populate()
+# before responding.  Allow nearly the full nginx proxy_read_timeout (60 s).
+FORCE_SNAPSHOT_TIMEOUT_SECONDS = 58.0
+
+# run_automatically thread starts immediately and calls _fetch_data() on the
+# first iteration.  Allow two minutes for the external HTTP + DB populate.
+AUTO_SNAPSHOT_POLL_TIMEOUT_SECONDS = 120.0
+AUTO_SNAPSHOT_POLL_INTERVAL_SECONDS = 3.0
+
 # ---------------------------------------------------------------------------
 # Module-level temp directory shared between test classes
 # ---------------------------------------------------------------------------
@@ -648,25 +657,246 @@ class AnalysisDetailPageLoadTest(_NginxIntegrationTest):
             f"exceeds {PAGE_LOAD_BUDGET_SECONDS}s budget.",
         )
 
-        """GET /analyses/<pk>/ must respond in < 5s through nginx.
 
-        Will FAIL with the current code: _analysis_storage_estimate is
-        called synchronously → dbstat on the large SQLite file takes
-        60s+ → nginx returns 504 before Django responds.
+# ===========================================================================
+# Test class 4 — Snapshots and auto-run jobs during an active import task
+# ===========================================================================
+
+class SnapshotDuringImportTest(_NginxIntegrationTest):
+    """Snapshot creation and auto-run jobs must not be blocked by a running import.
+
+    Requirements tested:
+    - Snapshots can be taken on an analysis that is being imported during a
+      very long import task.
+    - Automatic update jobs (run_automatically=True) can run during a very
+      long import task.
+
+    A running import is simulated by inserting an AnalysisTransferTask with
+    status='running' into the DB (no actual import is executed).  This is
+    sufficient to test that no code path blocks these operations based on
+    import task state alone.
+
+    RED trigger: adding a guard in force_snapshot or _run_analysis that calls
+    Analysis._has_running_import_task() and blocks / aborts the operation.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._cleanup_tasks()
+        self._disable_auto_run()
+
+    def tearDown(self):
+        self._cleanup_tasks()
+        self._disable_auto_run()
+
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
+
+    def _cleanup_tasks(self):
+        try:
+            self._docker_exec_python(
+                f"from prices.models import AnalysisTransferTask\n"
+                f"AnalysisTransferTask.objects.filter(analysis_id={self._analysis_pk}).delete()"
+            )
+        except Exception:
+            pass
+
+    def _disable_auto_run(self):
+        """Set run_automatically=False directly in the DB (bypasses save() signal)."""
+        try:
+            self._docker_exec_python(
+                f"from prices.models import Analysis\n"
+                f"Analysis.objects.filter(pk={self._analysis_pk}).update(run_automatically=False)"
+            )
+        except Exception:
+            pass
+
+    def _csrf_token(self):
+        """Return the current csrftoken value from the session cookie jar."""
+        for cookie in self.cookie_jar.cookiejar:
+            if cookie.name == 'csrftoken':
+                return cookie.value
+        self.fail("No csrftoken cookie found — is the user logged in?")
+
+    def _post_form(self, path, form_data, timeout=30):
+        """Authenticated form POST through nginx.  Returns (status_code, elapsed_s).
+
+        Adds the CSRF token automatically unless already present in form_data.
+        urllib follows any redirect, so the returned status is from the final
+        response (typically 200 for the page after a redirect).
         """
-        pk = self._find_analysis_pk()
-        # Timeout must exceed nginx's proxy_read_timeout (60s) so we actually
-        # receive the 504 instead of getting a local socket timeout.
-        status, elapsed = self._fetch(f"/analyses/{pk}/", timeout=75)
-        self.assertNotEqual(
-            status, 504,
-            f"nginx returned 504 for /analyses/{pk}/ after {elapsed:.1f}s — "
-            f"_analysis_storage_estimate is blocking the HTTP request.",
+        form_data.setdefault('csrfmiddlewaretoken', self._csrf_token())
+        url = f"{DOCKER_BASE_URL}{path}"
+        data = urllib.parse.urlencode(form_data).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Referer": url, "Content-Type": "application/x-www-form-urlencoded"},
         )
-        self.assertEqual(status, 200, f"Unexpected status {status} for /analyses/{pk}/")
-        self.assertLess(
-            elapsed,
-            PAGE_LOAD_BUDGET_SECONDS,
-            f"/analyses/{pk}/ took {elapsed:.3f}s through nginx — "
-            f"exceeds {PAGE_LOAD_BUDGET_SECONDS}s budget.",
+        t0 = time.perf_counter()
+        try:
+            with self.opener.open(req, timeout=timeout) as resp:
+                resp.read()
+                return resp.status, time.perf_counter() - t0
+        except urllib.error.HTTPError as e:
+            return e.code, time.perf_counter() - t0
+        except Exception:
+            return 0, time.perf_counter() - t0
+
+    def _snapshot_count(self):
+        """Return the total number of Snapshot rows for _analysis_pk (any status)."""
+        out = self._docker_exec_python(
+            f"from prices.models import Snapshot\n"
+            f"print(Snapshot.objects.filter(analysis_id={self._analysis_pk}).count())"
+        )
+        return int(out.strip().split('\n')[-1])
+
+    def _latest_snapshot_status(self):
+        """Return the status string of the most recently created Snapshot."""
+        out = self._docker_exec_python(
+            f"from prices.models import Snapshot\n"
+            f"s = Snapshot.objects.filter(analysis_id={self._analysis_pk}).order_by('-id').first()\n"
+            f"print(s.status if s else 'none')"
+        )
+        return out.strip().split('\n')[-1]
+
+    def _create_running_import_task(self):
+        """Insert a status='running' import task to simulate a long-running import."""
+        self._docker_exec_python(
+            f"from prices.models import AnalysisTransferTask\n"
+            f"AnalysisTransferTask.objects.create("
+            f"analysis_id={self._analysis_pk},"
+            f"task_type='import',"
+            f"status='running',"
+            f")"
+        )
+
+    # -----------------------------------------------------------------------
+    # Requirement: force_snapshot is not blocked by a running import task
+    # -----------------------------------------------------------------------
+
+    def test_force_snapshot_not_blocked_by_running_import(self):
+        """POST /analyses/<pk>/snapshot/ must succeed (PROCESSED) with a running import.
+
+        force_snapshot creates a Snapshot row, calls _fetch_data() (real HTTP to
+        data_source_url), then populate() (DB writes).  None of this should be
+        guarded against a running import task: imports and manual snapshots must
+        be able to coexist.
+
+        Will FAIL for two distinct reasons:
+        - A guard like `if analysis._has_running_import_task(): return HttpResponseForbidden()`
+          would prevent the snapshot from being created at all.
+        - A bug like `update_or_create(name=..., defaults={'analysis': ...})` using only
+          `name` as the lookup key causes MultipleObjectsReturned when duplicate station
+          names exist in the source data, causing populate() to fail with status=ERROR.
+        """
+        initial_count = self._snapshot_count()
+        self._create_running_import_task()
+
+        # force_snapshot is POST-only; on success it 302-redirects to the
+        # analysis detail page, which urllib follows to a final 200.
+        # Use a generous timeout: _fetch_data() (real HTTP) + populate() can
+        # take up to ~40 s on a slow connection.
+        status, elapsed = self._post_form(
+            f"/analyses/{self._analysis_pk}/snapshot/",
+            {},
+            timeout=FORCE_SNAPSHOT_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            status, 200,
+            f"POST /analyses/{self._analysis_pk}/snapshot/ returned HTTP {status} "
+            f"after {elapsed:.1f}s with a running import task.  Expected 200 "
+            "(analysis detail page after redirect).  A running import must not "
+            "block manual snapshot creation.",
+        )
+        new_count = self._snapshot_count()
+        self.assertGreater(
+            new_count, initial_count,
+            f"No new snapshot was created (count unchanged at {initial_count}) "
+            "after POSTing to force_snapshot with a running import task.",
+        )
+        latest_status = self._latest_snapshot_status()
+        self.assertEqual(
+            latest_status, 'processed',
+            f"The new snapshot ended up with status='{latest_status}' instead of 'processed'. "
+            "Check the gunicorn logs for the root cause (e.g. MultipleObjectsReturned in "
+            "populate() or a network error from _fetch_data()).",
+        )
+
+    # -----------------------------------------------------------------------
+    # Requirement: run_automatically loop is not blocked by a running import
+    # -----------------------------------------------------------------------
+
+    def test_auto_run_not_blocked_by_running_import(self):
+        """run_automatically background thread must create snapshots during import.
+
+        Enabling run_automatically=True via the edit form triggers Analysis.save()
+        in gunicorn, which starts _run_analysis() as a daemon thread.  That thread
+        creates a Snapshot, fetches data from data_source_url (real HTTP), and
+        populates prices — all while a running import task is recorded in the DB.
+
+        Will FAIL if _run_analysis() gains a guard like:
+            analysis = Analysis.objects.get(pk=self.pk)
+            if analysis._has_running_import_task():
+                time.sleep(...)
+                continue   # skip this iteration
+        """
+        initial_count = self._snapshot_count()
+        self._create_running_import_task()
+
+        # Read current analysis field values so we can POST them back unchanged.
+        raw = self._docker_exec_python(
+            "from prices.models import Analysis; import json\n"
+            f"a = Analysis.objects.get(pk={self._analysis_pk})\n"
+            'print(json.dumps({"u": a.data_source_url, "f": a.update_frequency, "m": a.max_snapshots}))'
+        )
+        vals = json.loads(raw.strip().split('\n')[-1])
+
+        # POST to the edit form with run_automatically=True.  This triggers
+        # Analysis.save() in gunicorn → starts _run_analysis() as a daemon thread
+        # in the gunicorn process.  'active' is intentionally omitted: it is
+        # disabled by the form when an import is running and its current value is
+        # preserved server-side by clean_active().
+        status, _ = self._post_form(
+            f"/analyses/{self._analysis_pk}/edit/",
+            {
+                'data_source_url': vals['u'],
+                'update_frequency': str(vals['f']),
+                'max_snapshots':    str(vals['m']),
+                'run_automatically': 'on',
+            },
+            timeout=15,
+        )
+        self.assertEqual(
+            status, 200,
+            f"POST to /analyses/{self._analysis_pk}/edit/ returned HTTP {status} — "
+            "expected 200 (redirected to analysis detail page).",
+        )
+
+        # Poll until a new PROCESSED snapshot appears or the budget expires.
+        # _run_analysis() runs immediately on the first iteration (no initial
+        # sleep).  The dominant cost is _fetch_data() — a real HTTP request to
+        # data_source_url — which typically takes 5–30 s.
+        deadline = time.perf_counter() + AUTO_SNAPSHOT_POLL_TIMEOUT_SECONDS
+        processed_count = 0
+        initial_processed = int(self._docker_exec_python(
+            f"from prices.models import Snapshot\n"
+            f"print(Snapshot.objects.filter(analysis_id={self._analysis_pk}, status='processed').count())"
+        ).strip().split('\n')[-1])
+        while time.perf_counter() < deadline:
+            processed_count = int(self._docker_exec_python(
+                f"from prices.models import Snapshot\n"
+                f"print(Snapshot.objects.filter(analysis_id={self._analysis_pk}, status='processed').count())"
+            ).strip().split('\n')[-1])
+            if processed_count > initial_processed:
+                break
+            time.sleep(AUTO_SNAPSHOT_POLL_INTERVAL_SECONDS)
+
+        self.assertGreater(
+            processed_count, initial_processed,
+            f"No new PROCESSED snapshot appeared within {AUTO_SNAPSHOT_POLL_TIMEOUT_SECONDS}s "
+            f"after enabling run_automatically=True with a running import task "
+            f"(processed count stayed at {initial_processed}).  "
+            "The automatic update job must not be blocked by a running import task, "
+            "and snapshots must complete successfully (not fall into ERROR status).",
         )

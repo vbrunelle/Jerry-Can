@@ -1,0 +1,10 @@
+test_force_snapshot_not_blocked_by_running_import (prices.tests.test_large_scale.SnapshotDuringImportTest.test_force_snapshot_not_blocked_by_running_import)
+POST /analyses/<pk>/snapshot/ must succeed (PROCESSED) with a running import. ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 16.723s
+
+OK
+Found 1 test(s).
+Skipping setup of unused database(s): default.
+System check identified no issues (0 silenced).
