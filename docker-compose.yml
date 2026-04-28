@@ -10,6 +10,7 @@ services:
       - static_files:/app/staticfiles
     depends_on: []
     restart: unless-stopped
+    mem_limit: 1g
 
   nginx:
     image: nginx:alpine

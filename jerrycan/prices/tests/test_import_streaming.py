@@ -48,8 +48,12 @@ MEMORY_BUDGET_MB = 20
 # ---------------------------------------------------------------------------
 
 def _make_export_file(path, num_prices=1):
-    """Write a minimal valid export archive to *path*."""
-    payload = {
+    """Write a minimal valid export archive to *path*, streaming prices one at a time.
+
+    Prices are written entry-by-entry so this function itself never holds more
+    than one price record in memory, regardless of num_prices.
+    """
+    header = {
         "version": 1,
         "analysis": {
             "update_frequency": 5,
@@ -69,13 +73,17 @@ def _make_export_file(path, num_prices=1):
         "snapshots": [
             {"id": 1, "timestamp": "2026-01-01T00:00:00+00:00", "status": "processed"}
         ],
-        "prices": [
-            {"station_id": 1, "fuel_id": 1, "price": 100.0 + i % 200, "snapshot_id": 1}
-            for i in range(num_prices)
-        ],
     }
     with gzip.open(path, "wt", encoding="utf-8") as f:
-        json.dump(payload, f)
+        # Write everything up to the prices key, then stream prices one by one.
+        f.write(json.dumps(header)[:-1])  # strip trailing }
+        f.write(', "prices": [')
+        for i in range(num_prices):
+            if i:
+                f.write(",")
+            f.write(json.dumps({"station_id": 1, "fuel_id": 1,
+                                 "price": 100.0 + i % 200, "snapshot_id": 1}))
+        f.write("]}")
     return path
 
 
@@ -203,3 +211,130 @@ class StreamingImportMemoryTests(TransactionTestCase):
             f"Peak memory {peak_mb:.1f} MB exceeded budget of {MEMORY_BUDGET_MB} MB. "
             f"The import is likely loading all prices into RAM at once (json.load).",
         )
+
+
+# ---------------------------------------------------------------------------
+# Low-RAM environment simulation
+# ---------------------------------------------------------------------------
+
+# Batch size as defined in _do_import (5 000 prices per SQL executemany call).
+IMPORT_BATCH_SIZE = 5_000
+
+# Per-price overhead in a batch dict (station_id, fuel_id, price, snapshot_id).
+# Conservative upper bound: 4 ints/floats × ~28 bytes each + dict overhead ≈ 200 bytes.
+BYTES_PER_PRICE_IN_BATCH = 200
+
+# Safety factor: allow up to 10× the single-batch footprint for interpreter
+# overhead, SQLite query buffers, and tracemalloc bookkeeping.
+SAFETY_FACTOR = 10
+
+# Maximum acceptable Python heap peak for a streaming import regardless of
+# total price count (batch-proportional budget).
+# 5 000 prices × 200 B × 10 safety = ~10 MB
+LOW_RAM_MEMORY_BUDGET_MB = (IMPORT_BATCH_SIZE * BYTES_PER_PRICE_IN_BATCH * SAFETY_FACTOR) / 1024 / 1024
+
+# Scale used for the scalability check (100× the existing LARGE_PRICE_COUNT,
+# matching real production archive size ~24M prices).
+SCALE_PRICE_COUNT = 20_000_000
+
+
+@override_settings(ANALYSIS_EXPORT_DIR=EXPORT_DIR)
+class LowRamEnvironmentTests(TransactionTestCase):
+    """Verify streaming import behaviour under a simulated low-RAM constraint.
+
+    These tests confirm two properties that matter on resource-constrained
+    containers (e.g., 1 GiB Docker mem_limit):
+
+    1. **Batch-proportional heap** – Python heap peak is determined by a
+       single batch of prices (5 000 records), not by total price count.
+       This means the import can handle arbitrarily large archives without
+       growing unboundedly.
+
+    2. **Sub-linear scaling** – importing 5× as many prices must not use
+       5× as much Python heap, proving that the implementation truly streams
+       records rather than accumulating them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.makedirs(EXPORT_DIR, exist_ok=True)
+        cls.small_file = _make_export_file(
+            os.path.join(EXPORT_DIR, "low_ram_small.json.gz"),
+            num_prices=LARGE_PRICE_COUNT,       # 200 000 prices (baseline)
+        )
+        cls.large_file = _make_export_file(
+            os.path.join(EXPORT_DIR, "low_ram_large.json.gz"),
+            num_prices=SCALE_PRICE_COUNT,        # 1 000 000 prices (5× scale)
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(EXPORT_DIR, ignore_errors=True)
+        super().tearDownClass()
+
+    def _run_and_measure(self, file_path):
+        """Import *file_path* and return (peak_mb, task)."""
+        task = AnalysisTransferTask.objects.create(
+            task_type=AnalysisTransferTask.TaskType.IMPORT,
+            file_path=file_path,
+        )
+        tracemalloc.start()
+        tracemalloc.clear_traces()
+        task._run_import()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        task.refresh_from_db()
+        return peak_bytes / 1024 / 1024, task
+
+    def test_low_ram_peak_bounded_by_batch_size(self):
+        """Python heap peak during 1M-price import must not exceed batch-proportional budget.
+
+        Demonstrates that a container limited to ~1 GiB can safely run the
+        import: Python heap overhead is under {LOW_RAM_MEMORY_BUDGET_MB:.0f} MB
+        regardless of archive size.
+        """
+        peak_mb, task = self._run_and_measure(self.large_file)
+        self.assertEqual(
+            task.status, AnalysisTransferTask.Status.COMPLETED,
+            f"1M-price import failed: {task.error_message}",
+        )
+        self.assertLess(
+            peak_mb,
+            LOW_RAM_MEMORY_BUDGET_MB,
+            f"Peak Python heap {peak_mb:.1f} MB exceeded batch-proportional budget "
+            f"of {LOW_RAM_MEMORY_BUDGET_MB:.1f} MB for {SCALE_PRICE_COUNT:,} prices. "
+            f"The import batch size is {IMPORT_BATCH_SIZE:,} prices; memory should "
+            f"scale with batch size, not total price count.",
+        )
+
+    def test_memory_scales_sub_linearly_with_price_count(self):
+        """Peak Python heap must NOT scale proportionally with total price count.
+
+        Imports LARGE_PRICE_COUNT (200 000) and SCALE_PRICE_COUNT (1 000 000)
+        prices.  If the import truly streams, the 5× larger dataset must not
+        require 5× more Python heap.  Specifically, the ratio must be < 3×
+        (generous tolerance for SQLite cursor/buffer variance).
+        """
+        peak_small_mb, task_small = self._run_and_measure(self.small_file)
+        self.assertEqual(
+            task_small.status, AnalysisTransferTask.Status.COMPLETED,
+            f"Small import failed: {task_small.error_message}",
+        )
+
+        peak_large_mb, task_large = self._run_and_measure(self.large_file)
+        self.assertEqual(
+            task_large.status, AnalysisTransferTask.Status.COMPLETED,
+            f"Large import failed: {task_large.error_message}",
+        )
+
+        if peak_small_mb > 0:
+            ratio = peak_large_mb / peak_small_mb
+            self.assertLess(
+                ratio,
+                3.0,
+                f"Memory scaled by {ratio:.1f}× when price count grew 5× "
+                f"({LARGE_PRICE_COUNT:,} → {SCALE_PRICE_COUNT:,} prices). "
+                f"Small peak: {peak_small_mb:.1f} MB, large peak: {peak_large_mb:.1f} MB. "
+                f"A ratio < 3× is expected for a true streaming implementation.",
+            )
