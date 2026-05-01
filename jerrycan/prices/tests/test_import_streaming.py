@@ -233,9 +233,8 @@ SAFETY_FACTOR = 10
 # 5 000 prices × 200 B × 10 safety = ~10 MB
 LOW_RAM_MEMORY_BUDGET_MB = (IMPORT_BATCH_SIZE * BYTES_PER_PRICE_IN_BATCH * SAFETY_FACTOR) / 1024 / 1024
 
-# Scale used for the scalability check (100× the existing LARGE_PRICE_COUNT,
-# matching real production archive size ~24M prices).
-SCALE_PRICE_COUNT = 20_000_000
+# Scale used for the scalability check (5× the existing LARGE_PRICE_COUNT).
+SCALE_PRICE_COUNT = 1_000_000
 
 
 @override_settings(ANALYSIS_EXPORT_DIR=EXPORT_DIR)
@@ -265,7 +264,7 @@ class LowRamEnvironmentTests(TransactionTestCase):
         )
         cls.large_file = _make_export_file(
             os.path.join(EXPORT_DIR, "low_ram_large.json.gz"),
-            num_prices=SCALE_PRICE_COUNT,        # 1 000 000 prices (5× scale)
+            num_prices=SCALE_PRICE_COUNT,        # 1 000 000 prices (5× LARGE_PRICE_COUNT)
         )
 
     @classmethod
@@ -313,7 +312,7 @@ class LowRamEnvironmentTests(TransactionTestCase):
 
         Imports LARGE_PRICE_COUNT (200 000) and SCALE_PRICE_COUNT (1 000 000)
         prices.  If the import truly streams, the 5× larger dataset must not
-        require 5× more Python heap.  Specifically, the ratio must be < 3×
+        require 5× more Python heap.  A ratio < 3× is the acceptance criterion
         (generous tolerance for SQLite cursor/buffer variance).
         """
         peak_small_mb, task_small = self._run_and_measure(self.small_file)

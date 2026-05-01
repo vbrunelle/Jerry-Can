@@ -499,6 +499,7 @@ class AnalysisTransferTask(models.Model):
                     while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
                         msg = f'Prices export progress: {next_progress_milestone}% ({idx + 1:,}/{total_prices:,})'
                         self._log(msg, detail=self.status_detail, progress=self.progress_percent)
+                        next_progress_milestone += 5
 
             if total_prices > 0:
                 self._log(
