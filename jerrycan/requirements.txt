@@ -1,4 +1,5 @@
 django>=6.0,<7.0
+ijson>=3.0,<4.0
 pandas
 requests
 gunicorn

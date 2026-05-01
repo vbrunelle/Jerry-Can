@@ -1,6 +1,8 @@
 import gzip
+import ijson
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -497,6 +499,7 @@ class AnalysisTransferTask(models.Model):
                     while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
                         msg = f'Prices export progress: {next_progress_milestone}% ({idx + 1:,}/{total_prices:,})'
                         self._log(msg, detail=self.status_detail, progress=self.progress_percent)
+                        next_progress_milestone += 5
 
             if total_prices > 0:
                 self._log(
@@ -563,19 +566,73 @@ class AnalysisTransferTask(models.Model):
         self._check_cancel_requested()
         filepath = self.file_path
         self._log('Reading archive', detail='Reading archive', progress=5)
-        with gzip.open(filepath, 'rt', encoding='utf-8') as f:
-            data = json.load(f)
+
+        # ijson event types that carry no scalar value — used to skip structural
+        # tokens when collecting flat dict fields from the parse event stream.
+        _STRUCTURAL_EVENTS = frozenset(
+            ('start_map', 'end_map', 'start_array', 'end_array', 'map_key')
+        )
+
+        # --- Pass 1: read all sections except prices in a single file open.
+        #
+        # The export format is ordered: version → analysis → fuels → stations
+        # → snapshots → prices.  We parse with ijson.parse, collecting the small
+        # sections as plain dicts/lists, and break as soon as we encounter the
+        # start of the prices array.  This keeps Pass 1 to O(stations + snapshots)
+        # memory — typically a few MB even for large datasets.
+        version = 1
+        analysis_data = {}
+        fuels_list = []
+        stations_list = []
+        snapshots_list = []
+
+        with gzip.open(filepath, 'rb') as f:
+            for prefix, event, value in ijson.parse(f):
+                # version (top-level scalar)
+                if prefix == 'version' and event in ('number', 'integer'):
+                    version = int(value)
+
+                # analysis (flat dict)
+                elif prefix.startswith('analysis.') and event not in _STRUCTURAL_EVENTS:
+                    subkey = prefix[len('analysis.'):]
+                    if '.' not in subkey:
+                        analysis_data[subkey] = value
+
+                # fuels (list of flat dicts)
+                elif prefix == 'fuels.item' and event == 'start_map':
+                    fuels_list.append({})
+                elif prefix.startswith('fuels.item.') and event not in _STRUCTURAL_EVENTS:
+                    subkey = prefix[len('fuels.item.'):]
+                    if fuels_list and '.' not in subkey:
+                        fuels_list[-1][subkey] = value
+
+                # stations (list of flat dicts)
+                elif prefix == 'stations.item' and event == 'start_map':
+                    stations_list.append({})
+                elif prefix.startswith('stations.item.') and event not in _STRUCTURAL_EVENTS:
+                    subkey = prefix[len('stations.item.'):]
+                    if stations_list and '.' not in subkey:
+                        stations_list[-1][subkey] = value
+
+                # snapshots (list of flat dicts)
+                elif prefix == 'snapshots.item' and event == 'start_map':
+                    snapshots_list.append({})
+                elif prefix.startswith('snapshots.item.') and event not in _STRUCTURAL_EVENTS:
+                    subkey = prefix[len('snapshots.item.'):]
+                    if snapshots_list and '.' not in subkey:
+                        snapshots_list[-1][subkey] = value
+
+                # Stop before the prices array – do not materialise it here.
+                elif prefix == 'prices' and event == 'start_array':
+                    break
+
         self._check_cancel_requested()
         self._log('Archive loaded', detail='Validating archive', progress=8)
 
-        version = data.get('version', 1)
         if version != 1:
             raise ValueError(f"Unsupported export version: {version}")
 
-        analysis_data = data['analysis']
         should_activate = bool(analysis_data.get('active', False))
-        # Don't auto-run on import
-        analysis_data['run_automatically'] = False
         self._log('Creating analysis record', detail='Creating analysis', progress=10)
 
         with transaction.atomic():
@@ -596,7 +653,7 @@ class AnalysisTransferTask(models.Model):
 
         # Fuels: get_or_create by name, build ID mapping (fast, only a handful of fuels)
         fuel_id_map = {}
-        for fuel_data in data.get('fuels', []):
+        for fuel_data in fuels_list:
             self._check_cancel_requested()
             fuel, _ = Fuel.objects.get_or_create(name=fuel_data['name'])
             fuel_id_map[fuel_data['id']] = fuel.pk
@@ -607,7 +664,7 @@ class AnalysisTransferTask(models.Model):
         with transaction.atomic():
             # Stations: bulk_create with large batches
             station_id_map = {}
-            station_data_list = data.get('stations', [])
+            station_data_list = stations_list
             station_objs = [
                 Station(
                     name=s['name'], city=s['city'], region=s['region'],
@@ -637,7 +694,7 @@ class AnalysisTransferTask(models.Model):
 
             # Snapshots: bulk_create with large batches
             snapshot_id_map = {}
-            snapshot_data_list = data.get('snapshots', [])
+            snapshot_data_list = snapshots_list
             snapshot_objs = [
                 Snapshot(
                     analysis=analysis,
@@ -665,7 +722,12 @@ class AnalysisTransferTask(models.Model):
                 progress=60,
             )
 
-        # Prices: raw SQL executemany in batches to avoid one long DB write lock.
+        # --- Pass 2: stream the prices array one item at a time with ijson.
+        #
+        # Total price count is not known in advance (loading all prices to count
+        # them would defeat streaming), so progress is reported as a log-scale
+        # estimate: it starts at 60 % and asymptotically approaches 95 % as more
+        # rows are inserted, giving useful feedback without a denominator.
         price_table = Price._meta.db_table
         price_sql = (
             f"INSERT INTO {price_table} (station_id, fuel_id, snapshot_id, price) "
@@ -675,12 +737,11 @@ class AnalysisTransferTask(models.Model):
         batch = []
         batch_size = 5000
         inserted_prices = 0
-        total_prices = len(data.get('prices', []))
-        next_progress_milestone = 5
-        if total_prices:
-            self._log(f'Importing {total_prices:,} prices', detail='Importing prices', progress=60)
-        with connection.cursor() as cursor:
-            for pr in data.get('prices', []):
+        next_log_threshold = batch_size
+        self._log('Streaming prices from archive', detail='Importing prices', progress=60)
+
+        with gzip.open(filepath, 'rb') as f, connection.cursor() as cursor:
+            for pr in ijson.items(f, 'prices.item'):
                 ms = station_id_map.get(pr['station_id'])
                 mf = fuel_id_map.get(pr['fuel_id'])
                 mn = snapshot_id_map.get(pr['snapshot_id'])
@@ -692,43 +753,31 @@ class AnalysisTransferTask(models.Model):
                     with transaction.atomic():
                         cursor.executemany(price_sql, batch)
                     inserted_prices += len(batch)
-                    if total_prices:
-                        ratio = inserted_prices / total_prices
-                        progress = 60 + int(ratio * 35)
-                        self.status_detail = f'Importing prices ({inserted_prices:,}/{total_prices:,})'
-                        self.progress_percent = max(60, min(95, progress))
-                        self.save(update_fields=['status_detail', 'progress_percent'])
-
-                        current_pct = int(ratio * 100)
-                        while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
-                            msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
-                            self._log(
-                                msg,
-                                detail=self.status_detail,
-                                progress=self.progress_percent,
-                            )
-                            next_progress_milestone += 5
                     batch.clear()
+                    if inserted_prices >= next_log_threshold:
+                        # Log-scale progress between 60 % (start) and 94 % (cap before
+                        # the final 95 % logged after the loop).  The coefficient 8 was
+                        # chosen so that 10 000 rows → ~32 %, 1 000 000 rows → ~48 %,
+                        # giving perceptible movement even for very large imports where
+                        # the total row count is unknown in advance.
+                        progress = min(94, 60 + int(math.log10(inserted_prices + 1) * 8))
+                        detail = f'Importing prices ({inserted_prices:,} inserted…)'
+                        self.status_detail = detail
+                        self.progress_percent = progress
+                        self.save(update_fields=['status_detail', 'progress_percent'])
+                        self._log(
+                            f'Prices inserted: {inserted_prices:,}',
+                            detail=detail,
+                            progress=progress,
+                        )
+                        next_log_threshold = inserted_prices * 2
+
             if batch:
                 self._check_cancel_requested()
                 with transaction.atomic():
                     cursor.executemany(price_sql, batch)
                 inserted_prices += len(batch)
-                if total_prices:
-                    ratio = inserted_prices / total_prices
-                    progress = 60 + int(ratio * 35)
-                    detail = f'Importing prices ({inserted_prices:,}/{total_prices:,})'
-                    bounded_progress = max(60, min(95, progress))
-                    current_pct = int(ratio * 100)
-                    while current_pct >= next_progress_milestone and next_progress_milestone <= 100:
-                        msg = f'Prices import progress: {next_progress_milestone}% ({inserted_prices:,}/{total_prices:,})'
-                        self._log(msg, detail=detail, progress=bounded_progress)
-                        next_progress_milestone += 5
-                    self._log(
-                        f'Prices imported: {inserted_prices:,}/{total_prices:,}',
-                        detail=detail,
-                        progress=bounded_progress,
-                    )
+                batch.clear()
 
         self._log(
             f'Imported {inserted_prices:,} prices',
